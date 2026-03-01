@@ -69,6 +69,17 @@ Before configuring the Home Assistant integration, you need to register a new us
     - VIP users are never blocked by time profiles, passage mode, privacy mode, or other access restrictions, ensuring Home Assistant can always reach the lock
     - Click "Done" in the top-right corner
 
+### Recommended Bluetooth Settings (Optional)
+
+In the Argo app, open the lock settings and go to **Door Info → Advanced Settings**. The following options are available:
+
+- **Bluetooth Signal Power → High** and **Bluetooth Advertising Rate → High**: improves connection reliability, especially when Home Assistant is not physically close to the lock.
+
+  > [!WARNING]
+  > Both settings increase Bluetooth radio activity and will noticeably reduce battery life. Only apply them if the lock is powered by **mains electricity** rather than batteries.
+
+- **Sound → Off**: the lock emits a beep whenever the integration connects (e.g. during the log polling that runs every 5 minutes). If this is disruptive, disable the **Sound** option here.
+
 ### Home Assistant Configuration
 
 1. **Add Integration**: Go to Settings > Devices & Services > Add Integration
