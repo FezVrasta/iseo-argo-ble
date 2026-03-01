@@ -7,6 +7,7 @@ import logging
 from datetime import timedelta
 from typing import Any
 
+from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.components.lock import LockEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -91,10 +92,12 @@ class IseoLockEntity(LockEntity):
             # Another BLE operation is already in progress; skip this cycle.
             return
 
+        address = self._entry.data[CONF_ADDRESS]
         client = IseoClient(
-            address       = self._entry.data[CONF_ADDRESS],
+            address       = address,
             uuid_bytes    = self._uuid_bytes,
             identity_priv = self._identity_priv,
+            ble_device    = async_ble_device_from_address(self.hass, address, connectable=True),
         )
         try:
             async with self._ble_lock:
@@ -166,10 +169,12 @@ class IseoLockEntity(LockEntity):
 
         self._set_unlocking()
 
+        address = self._entry.data[CONF_ADDRESS]
         client = IseoClient(
-            address       = self._entry.data[CONF_ADDRESS],
+            address       = address,
             uuid_bytes    = self._uuid_bytes,
             identity_priv = self._identity_priv,
+            ble_device    = async_ble_device_from_address(self.hass, address, connectable=True),
         )
         try:
             async with self._ble_lock:
