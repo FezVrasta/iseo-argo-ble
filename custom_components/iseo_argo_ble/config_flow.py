@@ -20,7 +20,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, is_iseo_advertisement
-from .const import CONF_ADDRESS, CONF_PRIV_SCALAR, CONF_UUID, DOMAIN
+from .const import CONF_ADDRESS, CONF_PRIV_SCALAR, CONF_USER_MAP, CONF_UUID, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +63,11 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle config flow for ISEO Argo BLE Lock."""
 
     VERSION = 1
+
+    @staticmethod
+    @config_entries.callback
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> "IseoOptionsFlow":
+        return IseoOptionsFlow(config_entry)
 
     def __init__(self) -> None:
         self._locks:       dict[str, str] = {}
@@ -162,4 +167,70 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({}),
             description_placeholders={"uuid": self._uuid_hex.upper()},
             errors=errors,
+        )
+
+
+class IseoOptionsFlow(config_entries.OptionsFlow):
+    """Options flow for mapping Argo users to HA accounts."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self._config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        # Get cached users from coordinator (no fresh BLE connection needed).
+        coordinator = self.hass.data[DOMAIN][self._config_entry.entry_id]["coordinator"]
+        bt_users = [u for u in coordinator.users if u.user_type == 17]  # BT users only
+
+        # Build a name → uuid_hex lookup for the save step.
+        # Keys in the form are Argo friendly names (readable labels); values stored are UUIDs.
+        name_to_uuid: dict[str, str] = {
+            (u.name or u.uuid_hex[:8]): u.uuid_hex.lower()
+            for u in bt_users
+        }
+
+        if user_input is not None:
+            # Convert form keys (Argo names) back to stable UUID keys before storing.
+            mapping = {
+                name_to_uuid[name]: ha_uid
+                for name, ha_uid in user_input.items()
+                if ha_uid and name in name_to_uuid
+            }
+            return self.async_create_entry(title="", data={CONF_USER_MAP: mapping})
+
+        current_map: dict[str, str] = self._config_entry.options.get(CONF_USER_MAP, {})
+        # Invert current_map (uuid → ha_uid) to (name → ha_uid) for pre-population.
+        uuid_to_name = {v: k for k, v in name_to_uuid.items()}
+        name_defaults: dict[str, str] = {
+            uuid_to_name[uuid_key]: ha_uid
+            for uuid_key, ha_uid in current_map.items()
+            if uuid_key in uuid_to_name
+        }
+
+        # Fetch HA user accounts for the select options.
+        ha_users = await self.hass.auth.async_get_users()
+        ha_user_options = [
+            {"value": u.id, "label": u.name or u.id}
+            for u in ha_users
+            if not u.system_generated and u.is_active
+        ]
+
+        # Build schema: one SelectSelector per BT user, keyed by Argo name (used as label).
+        fields: dict = {}
+        for u in bt_users:
+            name    = u.name or u.uuid_hex[:8]
+            default = name_defaults.get(name)
+            desc    = {"suggested_value": default} if default else {}
+            fields[vol.Optional(name, description=desc)] = SelectSelector(
+                SelectSelectorConfig(
+                    options=ha_user_options,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(fields) if fields else vol.Schema({}),
+            description_placeholders={"count": str(len(bt_users))},
         )

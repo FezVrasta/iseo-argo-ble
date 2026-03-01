@@ -1,0 +1,45 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Serratura ISEO Argo BLE",
+        "description": "Seleziona la tua serratura dall'elenco delle serrature ISEO rilevate nelle vicinanze, ordinate per intensità del segnale. Se la serratura non compare nell'elenco, assicurati che sia accesa e nel raggio di portata del Bluetooth, quindi clicca Conferma per ripetere la scansione.",
+        "data": {
+          "address": "Dispositivo"
+        }
+      },
+      "register": {
+        "title": "Registrazione e Configurazione",
+        "description": "## Passaggio 1 — Registrazione nell'app Argo\n\nChiedi all'amministratore di aggiungere il seguente UUID come utente Bluetooth nell'app Argo:\n\n`{uuid}`\n\n⚠️ **Non cliccare Conferma finché l'UUID non è stato registrato.** In caso contrario la serratura rifiuterà la richiesta.\n\n## Passaggio 2 — Configurazione\n\nUna volta completata la registrazione, clicca **Conferma**. La serratura si aprirà brevemente per confermare l'avvenuto collegamento — questo comportamento è normale."
+      }
+    },
+    "error": {
+      "no_devices_found": "Nessuna serratura ISEO trovata nelle vicinanze. Assicurati che la serratura sia accesa e nel raggio di portata del Bluetooth, quindi clicca Conferma per ripetere la scansione.",
+      "auth_failed": "La serratura ha rifiutato l'autenticazione. Verifica che l'UUID indicato sopra sia stato correttamente registrato nell'app Argo prima di procedere.",
+      "cannot_connect": "Impossibile stabilire la connessione con la serratura. Verifica che sia accesa e nel raggio di portata del Bluetooth.",
+      "unknown": "Si è verificato un errore imprevisto. Consulta i log di Home Assistant per maggiori dettagli."
+    },
+    "abort": {
+      "already_configured": "Questa serratura è già stata configurata."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Collega Utenti Argo a Home Assistant",
+        "description": "Seleziona l'account Home Assistant per ogni utente Argo qui sotto. Lascia un campo vuoto per mantenere anonimi quegli eventi. Trovati {count} utenti Bluetooth.",
+        "data": {}
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "last_event": {
+        "name": "Ultimo Evento"
+      },
+      "battery": {
+        "name": "Batteria"
+      }
+    }
+  }
+}

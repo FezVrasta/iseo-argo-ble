@@ -7,12 +7,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import Context
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, LogEntry, UserEntry
-from .const import CONF_ADDRESS, DOMAIN, EVENT_TYPE
+from .const import CONF_ADDRESS, CONF_USER_MAP, DOMAIN, EVENT_TYPE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -138,11 +139,18 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
         # uuid_hex (lower-case, 32 chars) → display name; populated by _refresh_user_dir()
         self._user_dir:      dict[str, str]  = {}
         self._user_dir_ts:   datetime | None = None
+        # Full user list from last whitelist fetch
+        self._users:         list[UserEntry] = []
 
     @property
     def user_dir(self) -> dict[str, str]:
         """Return the current uuid_hex → name mapping."""
         return self._user_dir
+
+    @property
+    def users(self) -> list[UserEntry]:
+        """Return the full whitelist user list from the last fetch."""
+        return self._users
 
     async def _refresh_user_dir(self) -> None:
         """Fetch the whitelist from the lock and rebuild the name directory."""
@@ -160,6 +168,7 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
             _LOGGER.debug("Unexpected error during user refresh: %s", exc)
             return
 
+        self._users       = users
         # Only store users that have a non-empty name set.
         self._user_dir    = {u.uuid_hex.lower(): u.name for u in users if u.name}
         self._user_dir_ts = datetime.now(tz=timezone.utc)
@@ -178,14 +187,6 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
             self._baseline_set = bool(stored.get("baseline_set", False))
 
     async def _async_update_data(self) -> "LogEntry | None":
-        # Refresh the user directory on first run or when it goes stale.
-        now = datetime.now(tz=timezone.utc)
-        if (
-            self._user_dir_ts is None
-            or (now - self._user_dir_ts) >= _USER_REFRESH_INTERVAL
-        ):
-            await self._refresh_user_dir()
-
         client = IseoClient(
             address       = self._entry.data[CONF_ADDRESS],
             uuid_bytes    = self._uuid_bytes,
@@ -217,23 +218,37 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
         new = [e for e in entries if self._last_ts is None or e.timestamp > self._last_ts]
 
         if new:
-            # If the whitelist changed, refresh user directory before generating messages.
-            if any(e.event_code in _USER_CHANGE_EVENT_CODES for e in new):
+            # Refresh user directory if stale or if the whitelist changed.
+            now = datetime.now(tz=timezone.utc)
+            if (
+                self._user_dir_ts is None
+                or (now - self._user_dir_ts) >= _USER_REFRESH_INTERVAL
+                or any(e.event_code in _USER_CHANGE_EVENT_CODES for e in new)
+            ):
                 await self._refresh_user_dir()
 
             entity_id = self._lock_entity_id()
+            user_map: dict[str, str] = self._entry.options.get(CONF_USER_MAP, {})
             for e in reversed(new):   # fire in chronological order (oldest first)
                 raw_actor = e.user_info.strip() or e.extra_description.strip()
                 actor     = _resolve_actor(raw_actor, self._user_dir) if raw_actor else ""
-                self.hass.bus.async_fire(EVENT_TYPE, {
-                    "entity_id":  entity_id,
-                    "event_code": e.event_code,
-                    "name":       event_name(e.event_code),
-                    "message":    entry_message(e, self._user_dir),
-                    "actor":      actor,
-                    "timestamp":  e.timestamp.isoformat(),
-                    "battery":    e.battery,
-                })
+                # Map UUID → HA user ID for event context attribution.
+                uuid_key    = raw_actor.lower() if len(raw_actor) == 32 else None
+                ha_user_id  = user_map.get(uuid_key) if uuid_key else None
+                event_ctx   = Context(user_id=ha_user_id) if ha_user_id else None
+                self.hass.bus.async_fire(
+                    EVENT_TYPE,
+                    {
+                        "entity_id":  entity_id,
+                        "event_code": e.event_code,
+                        "name":       event_name(e.event_code),
+                        "message":    entry_message(e, self._user_dir),
+                        "actor":      actor,
+                        "timestamp":  e.timestamp.isoformat(),
+                        "battery":    e.battery,
+                    },
+                    context=event_ctx,
+                )
             self._last_ts = most_recent.timestamp
             await self._store.async_save({
                 "last_ts":      most_recent.timestamp.isoformat(),

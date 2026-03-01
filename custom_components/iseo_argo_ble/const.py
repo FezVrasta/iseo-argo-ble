@@ -7,6 +7,7 @@ PLATFORMS = ["lock", "sensor"]
 CONF_ADDRESS     = "address"
 CONF_UUID        = "uuid"
 CONF_PRIV_SCALAR = "priv_scalar"
+CONF_USER_MAP    = "user_map"   # ConfigEntry.options key: {uuid_hex: ha_user_id}
 
 # Event fired into the HA bus for every new access-log entry.
 EVENT_TYPE = f"{DOMAIN}_event"

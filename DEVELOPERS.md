@@ -20,7 +20,8 @@ iseo_ble/
     ├── lock.py                          # HA lock entity
     ├── ble_client.py                    # Core protocol implementation
     └── translations/
-        └── en.json                      # English translations
+        ├── en.json                      # English translations
+        └── it.json                      # Italian translations
 ```
 
 ## 🔨 Development Setup

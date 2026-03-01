@@ -1,7 +1,7 @@
 # ISEO Argo BLE Lock Integration
 
+[![HACS](https://img.shields.io/badge/HACS-Custom-orange)](https://hacs.xyz)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-compatible-0A75AD)](https://www.home-assistant.io/)
-[![Python](https://img.shields.io/badge/python-3.13-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
 A Home Assistant custom component and command-line utility for controlling ISEO Argo X1R Smart locks via Bluetooth Low Energy (BLE). This integration allows you to lock/unlock your smart door lock, monitor door status, and access lock logs directly from Home Assistant.
@@ -19,6 +19,7 @@ A Home Assistant custom component and command-line utility for controlling ISEO 
 - **🛠️ CLI Tool**: Standalone command-line utility for testing and debugging
 - **🔐 Secure Authentication**: Uses EC cryptography (SECP224R1) for secure communication
 - **📡 Bluetooth LE**: Local communication without cloud dependencies
+- **🌐 Localization**: Available in English and Italian
 
 ## 🚀 Quick Start
 
@@ -30,12 +31,11 @@ A Home Assistant custom component and command-line utility for controlling ISEO 
 
 ### Installation via HACS (Recommended)
 
-1. Open HACS in Home Assistant
-2. Go to "Integrations"
-3. Click the three dots menu and select "Custom repositories"
-4. Add this repository URL and select "Integration" as the category
-5. Find "ISEO Argo BLE Lock" in HACS and install it
-6. Restart Home Assistant
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=FezVrasta&repository=iseo-argo-ble&category=integration)
+
+1. Click the button above, or open HACS → Integrations → ⋮ → Custom repositories and add `https://github.com/FezVrasta/iseo-argo-ble` with category **Integration**
+2. Find "ISEO Argo BLE Lock" in HACS and install it
+3. Restart Home Assistant
 
 ### Manual Installation
 

@@ -23,6 +23,15 @@
       "already_configured": "This lock is already configured."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Link Argo Users to Home Assistant",
+        "description": "Select the Home Assistant account for each Argo user below. Leave a field blank to keep those events anonymous. {count} Bluetooth user(s) found.",
+        "data": {}
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "last_event": {
