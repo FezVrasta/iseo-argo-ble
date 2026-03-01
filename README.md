@@ -56,14 +56,18 @@ Before configuring the Home Assistant integration, you need to register a new us
 5. **User management**: Navigate to "Users"
 6. **Add new user**: Click the "+" button (top right)
 7. **Select phone user**: Choose "Phone with ARGO UID"
-8. **Configure user**: 
+8. **Configure user**:
    - Enter a name (e.g., "Home Assistant")
    - Enter the Home Assistant UID (displayed during HA configuration)
    - Click "Save"
-9. **Grant admin permissions** (optional, required for logs):
+9. **Grant Login permission** (**required** — the integration will not work without this):
    - Click on the user you just created
-   - Toggle on the "Login" option
+   - Toggle on the **"Login"** option — this allows the integration to authenticate and read lock logs
    - Click "Done" in the top-right corner
+10. **Set as VIP user** (strongly recommended):
+    - While still on the user detail screen, toggle on the **"VIP"** option
+    - VIP users are never blocked by time profiles, passage mode, privacy mode, or other access restrictions, ensuring Home Assistant can always reach the lock
+    - Click "Done" in the top-right corner
 
 ### Home Assistant Configuration
 
@@ -110,9 +114,9 @@ This project includes a standalone CLI tool for direct lock communication. See [
 - Ensure the correct UUID was entered during setup
 - Try generating a new identity if issues persist
 
-**Logs not accessible**
-- Verify the Home Assistant user has admin permissions in the Argo app
-- Check that "Login" option is enabled for the HA user
+**Authentication failed or logs not accessible**
+- Ensure the **"Login"** permission is enabled for the HA user in the Argo app — this is required for the integration to function
+- If automations are intermittently denied, enable the **"VIP"** option on the HA user so it is never blocked by time profiles or other access restrictions
 
 ### Debug Logging
 
