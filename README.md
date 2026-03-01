@@ -6,7 +6,7 @@
 
 A Home Assistant custom component and command-line utility for controlling ISEO Argo X1R Smart locks via Bluetooth Low Energy (BLE). This integration allows you to lock/unlock your smart door lock, monitor door status, and access lock logs directly from Home Assistant.
 
-> **⚠️ Important Disclaimer**
+> [!IMPORTANT]
 > 
 > This project is **not affiliated with ISEO, Argo, or Home Assistant** and is **not an official product**. This is an independent implementation for interoperability with the Argo lock system. **Use at your own risk.** All trademarks and rights reserved to their respective owners.
 
