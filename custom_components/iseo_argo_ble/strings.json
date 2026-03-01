@@ -1,0 +1,36 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "ISEO Argo BLE Lock",
+        "description": "Select your lock from the list of nearby ISEO locks, sorted by signal strength. If your lock is not listed, make sure it is powered on and within Bluetooth range, then click Submit to scan again.",
+        "data": {
+          "address": "Device"
+        }
+      },
+      "register": {
+        "title": "Register & Enroll",
+        "description": "## Step 1 — Register in the Argo app\n\nAsk the admin to add the following UUID as a Bluetooth user in the Argo app:\n\n`{uuid}`\n\n⚠️ **Do not click Submit until the UUID has been registered.** The lock will reject the request otherwise.\n\n## Step 2 — Enroll\n\nOnce registered, click **Submit**. The lock will open briefly to confirm — this is expected."
+      }
+    },
+    "error": {
+      "no_devices_found": "No ISEO locks found nearby. Make sure the lock is powered on and within Bluetooth range, then click Submit to scan again.",
+      "auth_failed": "The lock rejected the identity. Make sure the UUID above is registered in the Argo app before submitting.",
+      "cannot_connect": "Could not connect to the lock. Check it is powered on and within Bluetooth range.",
+      "unknown": "An unexpected error occurred. Check the Home Assistant logs for details."
+    },
+    "abort": {
+      "already_configured": "This lock is already configured."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "last_event": {
+        "name": "Last Event"
+      },
+      "battery": {
+        "name": "Battery"
+      }
+    }
+  }
+}
