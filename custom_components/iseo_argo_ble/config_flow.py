@@ -10,7 +10,11 @@ import voluptuous as vol
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, generate_private_key
 from homeassistant import config_entries
-from homeassistant.components.bluetooth import async_discovered_service_info
+from homeassistant.components.bluetooth import (
+    BluetoothServiceInfoBleak,
+    async_ble_device_from_address,
+    async_discovered_service_info,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.selector import (
@@ -31,7 +35,7 @@ def _pub_to_bytes(priv: Any) -> bytes:
     return raw[1:]  # 56-byte X||Y
 
 
-def _discover_locks(hass: HomeAssistant) -> dict[str, str]:
+def _discover_locks(hass: HomeAssistant) -> list[BluetoothServiceInfoBleak]:
     """
     Query HA's bluetooth integration for nearby ISEO locks, sorted by signal
     strength (strongest first).
@@ -46,15 +50,13 @@ def _discover_locks(hass: HomeAssistant) -> dict[str, str]:
     )
     _LOGGER.debug("HA bluetooth cache — %d connectable device(s) visible", len(all_devices))
 
-    found: dict[str, str] = {}
+    found: list[BluetoothServiceInfoBleak] = []
     for info in all_devices:
         if not is_iseo_advertisement(list(info.service_uuids or [])):
             _LOGGER.debug("  %s  name=%r — skipped (no ISEO device-type UUID)", info.address, info.name)
             continue
         _LOGGER.debug("  %s  name=%r  rssi=%d — ISEO lock", info.address, info.name, info.rssi)
-        name  = info.name or "Unknown"
-        label = f"{name}  —  {info.address}  (RSSI {info.rssi} dBm)"
-        found[info.address] = label
+        found.append(info)
 
     return found
 
@@ -70,8 +72,9 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return IseoOptionsFlow(config_entry)
 
     def __init__(self) -> None:
-        self._locks:       dict[str, str] = {}
+        self._discovered:  dict[str, BluetoothServiceInfoBleak] = {}
         self._address:     str = ""
+        self._device_name: str = ""
         self._uuid_hex:    str = ""
         self._priv_scalar: str = ""
         self._priv:        Any = None
@@ -92,7 +95,9 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             priv_int = priv.private_numbers().private_value
             new_uuid = uuid_module.uuid4().bytes
 
+            device_info      = self._discovered.get(address)
             self._address     = address
+            self._device_name = device_info.name if device_info and device_info.name else ""
             self._uuid_hex    = new_uuid.hex()
             self._priv_scalar = hex(priv_int)
             self._priv        = priv
@@ -101,9 +106,10 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Query HA's BLE cache (re-queried every time the form is shown, so
         # the user can wake the lock and click Submit to refresh the list).
-        self._locks = _discover_locks(self.hass)
+        found = _discover_locks(self.hass)
+        self._discovered = {info.address: info for info in found}
 
-        if not self._locks:
+        if not self._discovered:
             errors["base"] = "no_devices_found"
             return self.async_show_form(
                 step_id="user",
@@ -117,14 +123,54 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_ADDRESS): SelectSelector(
                     SelectSelectorConfig(
                         options=[
-                            {"value": addr, "label": label}
-                            for addr, label in self._locks.items()
+                            {
+                                "value": info.address,
+                                "label": f"{info.name or 'Unknown'}  —  {info.address}  (RSSI {info.rssi} dBm)",
+                            }
+                            for info in found
                         ],
                         mode=SelectSelectorMode.LIST,
                     )
                 ),
             }),
             errors=errors,
+        )
+
+    # ── Bluetooth auto-discovery ───────────────────────────────────────────
+    async def async_step_bluetooth(
+        self, discovery_info: BluetoothServiceInfoBleak
+    ) -> FlowResult:
+        """Called by HA when a matching BLE advertisement is seen."""
+        await self.async_set_unique_id(discovery_info.address.replace(":", ""))
+        self._abort_if_unique_id_configured()
+
+        # Safety check — only accept genuine ISEO advertisements.
+        if not is_iseo_advertisement(list(discovery_info.service_uuids or [])):
+            return self.async_abort(reason="not_iseo_device")
+
+        priv     = generate_private_key(SECP224R1(), default_backend())
+        priv_int = priv.private_numbers().private_value
+        new_uuid = uuid_module.uuid4().bytes
+
+        self._address     = discovery_info.address
+        self._device_name = discovery_info.name or discovery_info.address
+        self._uuid_hex    = new_uuid.hex()
+        self._priv_scalar = hex(priv_int)
+        self._priv        = priv
+
+        self.context["title_placeholders"] = {"name": self._device_name}
+        return await self.async_step_bluetooth_confirm()
+
+    async def async_step_bluetooth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Confirm the discovered lock before proceeding to enrollment."""
+        if user_input is not None:
+            return await self.async_step_register()
+
+        return self.async_show_form(
+            step_id="bluetooth_confirm",
+            description_placeholders={"name": self._device_name},
         )
 
     # ── Step 2: show UUID, send Open command to enroll ────────────────────
@@ -143,6 +189,9 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 address       = self._address,
                 uuid_bytes    = bytes.fromhex(self._uuid_hex),
                 identity_priv = self._priv,
+                ble_device    = async_ble_device_from_address(
+                    self.hass, self._address, connectable=True
+                ),
             )
             try:
                 await client.open_lock()
@@ -154,7 +203,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
             else:
                 return self.async_create_entry(
-                    title=f"ISEO Lock ({self._address})",
+                    title=self._device_name or f"ISEO Lock ({self._address})",
                     data={
                         CONF_ADDRESS:     self._address,
                         CONF_UUID:        self._uuid_hex,

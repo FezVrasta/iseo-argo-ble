@@ -8,6 +8,10 @@
           "address": "Dispositivo"
         }
       },
+      "bluetooth_confirm": {
+        "title": "Serratura ISEO Rilevata",
+        "description": "È stata trovata una nuova serratura ISEO nelle vicinanze: **{name}**.\n\nClicca **Conferma** per avviare la configurazione."
+      },
       "register": {
         "title": "Registrazione e Configurazione",
         "description": "## Passaggio 1 — Registrazione nell'app Argo\n\nChiedi all'amministratore di aggiungere il seguente UUID come utente Bluetooth nell'app Argo:\n\n`{uuid}`\n\n⚠️ **Non cliccare Conferma finché l'UUID non è stato registrato.** In caso contrario la serratura rifiuterà la richiesta.\n\n## Passaggio 2 — Configurazione\n\nUna volta completata la registrazione, clicca **Conferma**. La serratura si aprirà brevemente per confermare l'avvenuto collegamento — questo comportamento è normale."
@@ -20,7 +24,8 @@
       "unknown": "Si è verificato un errore imprevisto. Consulta i log di Home Assistant per maggiori dettagli."
     },
     "abort": {
-      "already_configured": "Questa serratura è già stata configurata."
+      "already_configured": "Questa serratura è già stata configurata.",
+      "not_iseo_device": "Questo dispositivo non sembra essere una serratura ISEO."
     }
   },
   "options": {

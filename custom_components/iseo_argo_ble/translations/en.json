@@ -8,6 +8,10 @@
           "address": "Device"
         }
       },
+      "bluetooth_confirm": {
+        "title": "ISEO Lock Discovered",
+        "description": "Found a new ISEO lock nearby: **{name}**.\n\nClick **Submit** to begin setup."
+      },
       "register": {
         "title": "Register & Enroll",
         "description": "## Step 1 — Register in the Argo app\n\nAsk the admin to add the following UUID as a Bluetooth user in the Argo app:\n\n`{uuid}`\n\n⚠️ **Do not click Submit until the UUID has been registered.** The lock will reject the request otherwise.\n\n## Step 2 — Enroll\n\nOnce registered, click **Submit**. The lock will open briefly to confirm — this is expected."
@@ -20,7 +24,8 @@
       "unknown": "An unexpected error occurred. Check the Home Assistant logs for details."
     },
     "abort": {
-      "already_configured": "This lock is already configured."
+      "already_configured": "This lock is already configured.",
+      "not_iseo_device": "This device does not appear to be an ISEO lock."
     }
   },
   "options": {

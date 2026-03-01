@@ -14,11 +14,17 @@ import logging
 import os
 import struct
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 from bleak import BleakClient
+
+try:
+    from bleak_retry_connector import establish_connection as _bleak_establish_connection
+except ImportError:
+    _bleak_establish_connection = None  # type: ignore[assignment]
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric.ec import ECDH, SECP224R1
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -457,10 +463,17 @@ class IseoClient:
     re-used across calls since the lock terminates them after each command.
     """
 
-    def __init__(self, address: str, uuid_bytes: bytes, identity_priv: Any) -> None:
+    def __init__(
+        self,
+        address: str,
+        uuid_bytes: bytes,
+        identity_priv: Any,
+        ble_device: Any = None,
+    ) -> None:
         self._address       = address
         self._uuid_bytes    = uuid_bytes
         self._identity_priv = identity_priv
+        self._ble_device    = ble_device  # bleak BLEDevice; enables retry-connector when set
 
         self._rxq      = asyncio.Queue()
         self._slip_buf = bytearray()
@@ -529,6 +542,29 @@ class IseoClient:
         _LOGGER.debug("← SBT %s", sbt)
         return sbt
 
+    # ── BLE connection helper ──────────────────────────────────────────────
+    @asynccontextmanager
+    async def _connected_client(self, timeout: float):
+        """
+        Yield a connected BleakClient.
+
+        Uses bleak-retry-connector (establish_connection) when a BLEDevice
+        object is available — this is the HA-recommended path that avoids the
+        habluetooth.wrappers warning and provides automatic retry logic.
+        Falls back to a plain BleakClient(address) for CLI / standalone use.
+        """
+        if self._ble_device is not None and _bleak_establish_connection is not None:
+            client = await _bleak_establish_connection(
+                BleakClient, self._ble_device, self._address
+            )
+            try:
+                yield client
+            finally:
+                await client.disconnect()
+        else:
+            async with BleakClient(self._address, timeout=timeout) as client:
+                yield client
+
     # ── ECDH handshake ─────────────────────────────────────────────────────
     async def _handshake(self, client: BleakClient) -> None:
         priv      = self._identity_priv
@@ -583,7 +619,7 @@ class IseoClient:
             IseoAuthError:       Lock rejected our identity (status ≠ 0).
         """
         _LOGGER.debug("Connecting to %s", self._address)
-        async with BleakClient(self._address, timeout=connect_timeout) as client:
+        async with self._connected_client(connect_timeout) as client:
             await client.start_notify(_S2C_UUID, self._on_notify)
 
             try:
@@ -632,7 +668,7 @@ class IseoClient:
             IseoAuthError:       Lock returned a non-zero status.
         """
         _LOGGER.debug("Reading state from %s", self._address)
-        async with BleakClient(self._address, timeout=connect_timeout) as client:
+        async with self._connected_client(connect_timeout) as client:
             await client.start_notify(_S2C_UUID, self._on_notify)
 
             try:
@@ -727,7 +763,7 @@ class IseoClient:
         _LOGGER.debug("Reading logs from %s (start=%d, max=%d)", self._address, start, max_entries)
         entries: list[LogEntry] = []
 
-        async with BleakClient(self._address, timeout=connect_timeout) as client:
+        async with self._connected_client(connect_timeout) as client:
             await client.start_notify(_S2C_UUID, self._on_notify)
 
             try:
@@ -843,7 +879,7 @@ class IseoClient:
         _LOGGER.debug("Reading users from %s", self._address)
         entries: list[UserEntry] = []
 
-        async with BleakClient(self._address, timeout=connect_timeout) as client:
+        async with self._connected_client(connect_timeout) as client:
             await client.start_notify(_S2C_UUID, self._on_notify)
 
             try:

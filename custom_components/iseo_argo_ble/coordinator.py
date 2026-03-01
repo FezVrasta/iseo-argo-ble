@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Context
 from homeassistant.helpers import entity_registry as er
@@ -154,10 +155,12 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
 
     async def _refresh_user_dir(self) -> None:
         """Fetch the whitelist from the lock and rebuild the name directory."""
+        address = self._entry.data[CONF_ADDRESS]
         client = IseoClient(
-            address       = self._entry.data[CONF_ADDRESS],
+            address       = address,
             uuid_bytes    = self._uuid_bytes,
             identity_priv = self._identity_priv,
+            ble_device    = async_ble_device_from_address(self.hass, address, connectable=True),
         )
         try:
             users: list[UserEntry] = await client.read_users()
@@ -187,10 +190,12 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
             self._baseline_set = bool(stored.get("baseline_set", False))
 
     async def _async_update_data(self) -> "LogEntry | None":
+        address = self._entry.data[CONF_ADDRESS]
         client = IseoClient(
-            address       = self._entry.data[CONF_ADDRESS],
+            address       = address,
             uuid_bytes    = self._uuid_bytes,
             identity_priv = self._identity_priv,
+            ble_device    = async_ble_device_from_address(self.hass, address, connectable=True),
         )
         try:
             entries = await client.read_logs(start=0, max_entries=_MAX_ENTRIES_PER_POLL)
