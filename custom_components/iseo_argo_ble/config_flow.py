@@ -88,8 +88,10 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None and CONF_ADDRESS in user_input:
             address = user_input[CONF_ADDRESS]
 
+            # Register the unique ID for this flow but do NOT abort if the
+            # device is already configured — the user may intentionally be
+            # re-enrolling (e.g. after a lock factory reset).
             await self.async_set_unique_id(address.replace(":", ""))
-            self._abort_if_unique_id_configured()
 
             priv     = generate_private_key(SECP224R1(), default_backend())
             priv_int = priv.private_numbers().private_value
@@ -102,7 +104,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._priv_scalar = hex(priv_int)
             self._priv        = priv
 
-            return await self.async_step_register()
+            return await self.async_step_show_uuid()
 
         # Query HA's BLE cache (re-queried every time the form is shown, so
         # the user can wake the lock and click Submit to refresh the list).
@@ -117,6 +119,13 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors=errors,
             )
 
+        # Mark devices that are already configured so the user can make an
+        # informed choice, but don't prevent them from selecting one.
+        configured = {
+            entry.data.get(CONF_ADDRESS)
+            for entry in self._async_current_entries()
+        }
+
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({
@@ -125,7 +134,11 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         options=[
                             {
                                 "value": info.address,
-                                "label": f"{info.name or 'Unknown'}  —  {info.address}  (RSSI {info.rssi} dBm)",
+                                "label": (
+                                    f"{info.name or 'Unknown'}  —  {info.address}"
+                                    f"  (RSSI {info.rssi} dBm)"
+                                    + (" — already configured" if info.address in configured else "")
+                                ),
                             }
                             for info in found
                         ],
@@ -166,21 +179,37 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Confirm the discovered lock before proceeding to enrollment."""
         if user_input is not None:
-            return await self.async_step_register()
+            return await self.async_step_show_uuid()
 
         return self.async_show_form(
             step_id="bluetooth_confirm",
             description_placeholders={"name": self._device_name},
         )
 
-    # ── Step 2: show UUID, send Open command to enroll ────────────────────
-    async def async_step_register(
+    # ── Step 2: show UUID + Argo app instructions ─────────────────────────
+    async def async_step_show_uuid(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Display the UUID and walk the user through the Argo app setup."""
+        if user_input is not None:
+            return await self.async_step_enroll()
+
+        return self.async_show_form(
+            step_id="show_uuid",
+            data_schema=vol.Schema({}),
+            description_placeholders={"uuid": self._uuid_hex.upper()},
+        )
+
+    # ── Step 3: warn about door opening, then enroll public key ───────────
+    async def async_step_enroll(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """
-        Display the UUID for the admin to register in the Argo app.
-        Submitting sends an Open command which proves key ownership and
-        enrolls the public key on the lock. Success creates the config entry.
+        Send TLV_OPEN to enroll the public key on the lock.
+        This also physically opens the lock momentarily — warn the user.
+        open_lock() MUST be called before any other command (read_users,
+        read_logs) because it is what activates the newly added user on
+        the lock and stores the public key in the whitelist.
         """
         errors: dict[str, str] = {}
 
@@ -202,6 +231,48 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception:
                 errors["base"] = "unknown"
             else:
+                return await self.async_step_verify_permissions()
+
+        return self.async_show_form(
+            step_id="enroll",
+            data_schema=vol.Schema({}),
+            errors=errors,
+        )
+
+    # ── Step 4: verify Login permission via TLV_LOGIN + user list check ───
+    async def async_step_verify_permissions(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """
+        Called after open_lock() has activated the user.
+        The check runs automatically on entry (and again on every Submit).
+        If it passes the config entry is created immediately without showing
+        a form; the form only appears when the check fails, giving the user
+        specific instructions on what to fix before retrying.
+        """
+        errors: dict[str, str] = {}
+
+        client = IseoClient(
+            address       = self._address,
+            uuid_bytes    = bytes.fromhex(self._uuid_hex),
+            identity_priv = self._priv,
+            ble_device    = async_ble_device_from_address(
+                self.hass, self._address, connectable=True
+            ),
+        )
+        try:
+            users = await client.read_users()
+        except IseoAuthError:
+            errors["base"] = "login_permission_missing"
+        except IseoConnectionError:
+            errors["base"] = "cannot_connect"
+        except Exception:
+            errors["base"] = "unknown"
+        else:
+            our_uuid = self._uuid_hex.lower()
+            if not any(u.uuid_hex.lower() == our_uuid for u in users):
+                errors["base"] = "user_not_found"
+            else:
                 return self.async_create_entry(
                     title=self._device_name or f"ISEO Lock ({self._address})",
                     data={
@@ -212,9 +283,8 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
         return self.async_show_form(
-            step_id="register",
+            step_id="verify_permissions",
             data_schema=vol.Schema({}),
-            description_placeholders={"uuid": self._uuid_hex.upper()},
             errors=errors,
         )
 

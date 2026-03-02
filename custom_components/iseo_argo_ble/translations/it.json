@@ -12,14 +12,24 @@
         "title": "Serratura ISEO Rilevata",
         "description": "È stata trovata una nuova serratura ISEO nelle vicinanze: **{name}**.\n\nClicca **Conferma** per avviare la configurazione."
       },
-      "register": {
-        "title": "Registrazione e Configurazione",
-        "description": "## Passaggio 1 — Registrazione nell'app Argo\n\nChiedi all'amministratore di aggiungere il seguente UUID come utente Bluetooth nell'app Argo:\n\n`{uuid}`\n\n⚠️ **Non cliccare Conferma finché l'UUID non è stato registrato.** In caso contrario la serratura rifiuterà la richiesta.\n\n## Passaggio 2 — Configurazione\n\nUna volta completata la registrazione, clicca **Conferma**. La serratura si aprirà brevemente per confermare l'avvenuto collegamento — questo comportamento è normale."
+      "show_uuid": {
+        "title": "Aggiungi all'app Argo",
+        "description": "Aggiungi il seguente UUID come nuovo utente Bluetooth nell'app Argo:\n\n`{uuid}`\n\n1. Apri l'**app Argo**, tocca la tua serratura, poi vai su **Utenti → + → Telefono con UID ARGO**\n2. Inserisci un nome (es. *Home Assistant*), incolla l'UUID sopra, poi tocca **Salva**\n3. Tocca il nuovo utente e abilita **Login** — è **obbligatorio** per l'autenticazione dell'integrazione\n4. Abilita **VIP** (fortemente consigliato) — gli utenti VIP non vengono mai bloccati da profili orari, modalità passaggio o altre restrizioni di accesso\n\n⚠️ **Il prossimo passaggio aprirà la serratura.** Una volta completati i passaggi sopra, clicca **Conferma**."
+      },
+      "enroll": {
+        "title": "Registrazione e Attivazione",
+        "description": "⚠️ **La serratura sta per aprirsi.**\n\nCliccando **Conferma** verrà inviato un comando di apertura alla serratura. Il catenaccio si ritrae brevemente — questo attiva il nuovo account utente e memorizza le credenziali sulla serratura.\n\nAssicurati che sia sicuro aprire la porta in questo momento, poi clicca **Conferma**."
+      },
+      "verify_permissions": {
+        "title": "Verifica Permessi",
+        "description": "La verifica dei permessi non è riuscita. Correggi il problema indicato sotto, poi clicca **Conferma** per riprovare.\n\n> ℹ️ **La porta non si aprirà di nuovo** durante questo controllo."
       }
     },
     "error": {
       "no_devices_found": "Nessuna serratura ISEO trovata nelle vicinanze. Assicurati che la serratura sia accesa e nel raggio di portata del Bluetooth, quindi clicca Conferma per ripetere la scansione.",
-      "auth_failed": "La serratura ha rifiutato l'autenticazione. Verifica che l'UUID indicato sopra sia stato correttamente registrato nell'app Argo prima di procedere.",
+      "login_permission_missing": "Impossibile verificare l'account. Assicurati che l'UUID sia aggiunto come utente nell'app Argo e che il permesso Login sia abilitato.",
+      "user_not_found": "Questo UUID non è stato trovato nella lista utenti della serratura. Aggiungilo nell'app Argo e riprova.",
+      "auth_failed": "La serratura ha rifiutato la richiesta. Assicurati che l'account sia stato configurato correttamente nell'app Argo.",
       "cannot_connect": "Impossibile stabilire la connessione con la serratura. Verifica che sia accesa e nel raggio di portata del Bluetooth.",
       "unknown": "Si è verificato un errore imprevisto. Consulta i log di Home Assistant per maggiori dettagli."
     },
