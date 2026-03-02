@@ -4,7 +4,9 @@
 [![Home Assistant](https://img.shields.io/badge/home--assistant-compatible-0A75AD)](https://www.home-assistant.io/)
 [![License](https://img.shields.io/badge/license-MIT-green)](#license)
 
-A Home Assistant custom component and command-line utility for controlling ISEO Argo X1R Smart locks via Bluetooth Low Energy (BLE). This integration allows you to lock/unlock your smart door lock, monitor door status, and access lock logs directly from Home Assistant.
+A Home Assistant custom component and command-line utility for controlling ISEO smart locks via Bluetooth Low Energy (BLE). 
+
+This integration makes Home Assistant behave as a native **ISEO ARGO Gateway**, providing a professional-grade implementation with specialized commands and real-time monitoring.
 
 > [!IMPORTANT]
 > 
@@ -12,87 +14,46 @@ A Home Assistant custom component and command-line utility for controlling ISEO 
 
 ## ✨ Features
 
-- **🔓 Lock Control**: Remotely unlock your ISEO Argo X1R smart lock
-- **📊 Status Monitoring**: Real-time door open/closed state detection
-- **📱 Home Assistant Integration**: Native HA lock entity with status updates
-- **🔍 Lock Logs**: Access and retrieve lock activity logs
-- **🛠️ CLI Tool**: Standalone command-line utility for testing and debugging
-- **🔐 Secure Authentication**: Uses EC cryptography (SECP224R1) for secure communication
-- **📡 Bluetooth LE**: Local communication without cloud dependencies
-- **🌐 Localization**: Available in English and Italian
+- **🚀 Native Performance**: Uses specialized Gateway commands for fast response times and improved reliability.
+- **🤫 Silent Operation**: Log polling is performed using specialized unread-log commands that do **not** trigger the lock's audible "beep."
+- **👤 User Attribution**: Attributes remote operations to the specific Home Assistant user. Audit logs will show "Opened by [HA User] via Home Assistant."
+- **🔓 Lock Control**: Remotely unlock your ISEO smart lock with real-time feedback.
+- **📊 Full Audit Logs**: Access every log entry found on the lock, with automatic mapping to Home Assistant users.
+- **🔐 Secure Authentication**: Uses EC cryptography (SECP224R1) for secure session establishment.
+- **📡 Local Control**: Direct Bluetooth communication without any cloud dependencies or bridge hardware.
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Home Assistant with Bluetooth support
-- ISEO Argo X1R Smart lock (other models may work but are untested)
-- Python 3.13+ (for CLI usage)
+- Home Assistant with Bluetooth support.
+- ISEO Smart lock (X1R Smart, Smart Series, etc.).
+- Physical **Master Card** for the lock (required for setup).
 
 ### Installation via HACS (Recommended)
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=FezVrasta&repository=iseo-argo-ble&category=integration)
 
-1. Click the button above, or open HACS → Integrations → ⋮ → Custom repositories and add `https://github.com/FezVrasta/iseo-argo-ble` with category **Integration**
-2. Find "ISEO Argo BLE Lock" in HACS and install it
-3. Restart Home Assistant
-
-### Manual Installation
-
-1. Download the latest release
-2. Copy the `custom_components/iseo_argo_ble` folder to your Home Assistant `custom_components` directory
-3. Restart Home Assistant
+1. Click the button above, or open HACS → Integrations → ⋮ → Custom repositories and add `https://github.com/FezVrasta/iseo-argo-ble` with category **Integration**.
+2. Find "ISEO Argo BLE Lock" in HACS and install it.
+3. Restart Home Assistant.
 
 ## 🔧 Configuration
 
-### Setting up the Lock in Argo App
+The integration uses a streamlined "Direct Master Registration" flow.
 
-Before configuring the Home Assistant integration, you need to register a new user in the official Argo app:
+1. **Add Integration**: Go to Settings > Devices & Services > Add Integration and search for "ISEO Argo BLE Lock".
+2. **Discovery**: Select your lock from the discovered Bluetooth devices.
+3. **Register Gateway**: When prompted, click **Submit**, then scan your physical **Master Card** on the lock within 30 seconds. The lock will blink green once the card is read successfully.
+4. **Enable Logs**: Click **Submit** again and scan the **Master Card** one more time within 30 seconds to enable real-time log notifications. The lock will blink green once the card is read successfully.
+5. **Map Users**: Finally, click **Submit** and scan the **Master Card** a third time within 30 seconds to download the lock's whitelist. The lock will blink green once the card is read successfully. Home Assistant will then let you link your physical credentials (RFID tags, PINs, phones) to your Home Assistant user accounts.
 
-1. **Open the Argo app** on your mobile device
-2. **Access lock settings**: Click on the door (not the "Open" button)
-3. **Admin setup** (if needed): If no admin phone user is configured, scan the master card on the door
-4. **Login**: Click on the "Login" button
-5. **User management**: Navigate to "Users"
-6. **Add new user**: Click the "+" button (top right)
-7. **Select phone user**: Choose "Phone with ARGO UID"
-8. **Configure user**:
-   - Enter a name (e.g., "Home Assistant")
-   - Enter the Home Assistant UID (displayed during HA configuration)
-   - Click "Save"
-9. **Grant Login permission** (**required** — the integration will not work without this):
-   - Click on the user you just created
-   - Toggle on the **"Login"** option — this allows the integration to authenticate and read lock logs
-   - Click "Done" in the top-right corner
-10. **Set as VIP user** (strongly recommended):
-    - While still on the user detail screen, toggle on the **"VIP"** option
-    - VIP users are never blocked by time profiles, passage mode, privacy mode, or other access restrictions, ensuring Home Assistant can always reach the lock
-    - Click "Done" in the top-right corner
+## 👥 User Mapping
 
-### Recommended Bluetooth Settings (Optional)
-
-In the Argo app, open the lock settings and go to **Door Info → Advanced Settings**. The following options are available:
-
-- **Bluetooth Signal Power → High** and **Bluetooth Advertising Rate → High**: improves connection reliability, especially when Home Assistant is not physically close to the lock.
-
-  > [!WARNING]
-  > Both settings increase Bluetooth radio activity and will noticeably reduce battery life. Only apply them if the lock is powered by **mains electricity** rather than batteries.
-
-- **Sound → Off**: the lock emits a beep whenever the integration connects (e.g. during the log polling that runs every 5 minutes). If this is disruptive, disable the **Sound** option here.
-
-### Home Assistant Configuration
-
-1. **Add Integration**: Go to Settings > Devices & Services > Add Integration
-2. **Search**: Look for "ISEO Argo BLE Lock"
-3. **Discovery**: The integration will scan for nearby BLE devices
-4. **Select Device**: Choose your lock from the list of discovered devices
-5. **Authentication**: The system will generate a unique UUID and cryptographic keypair
-6. **Pairing**: Follow the on-screen instructions to complete pairing
-7. **Verification**: Test the lock functionality
-
-## 🖥️ Command Line Usage
-
-This project includes a standalone CLI tool for direct lock communication. See [CLI.md](CLI.md) for detailed usage instructions, examples, and command reference.
+Once configured, you can use the **Configure** button on the integration page to refresh the user mapping. This allows you to:
+- Link an RFID tag or PIN to a specific person in Home Assistant.
+- See exactly who opened the door in the Home Assistant Logbook.
+- Attribute remote openings via the Home Assistant UI to the specific HA user who clicked the button.
 
 ##  Entity Information
 
@@ -101,58 +62,27 @@ This project includes a standalone CLI tool for direct lock communication. See [
 - **Domain**: `lock`
 - **State**: `locked` / `unlocked`
 - **Attributes**:
-  - `door_state`: Open/closed status (if supported by hardware)
-  - `battery_level`: Battery percentage (if available)
-  - `last_update`: Timestamp of last status update
-
-### Entity Features
-
-- **Lock/Unlock**: Control lock state
-- **Status Polling**: Automatic status updates every 30 seconds
-- **Fallback Timeout**: Auto-relock after 5 seconds (when door sensor unavailable)
+  - `door_state`: Open/closed status (requires hardware sensor)
+  - `battery_level`: Battery percentage
+  - `last_event`: The last recorded action (e.g., "Opened by Marco")
 
 ## ⚠️ Troubleshooting
 
-### Common Issues
+**"No backend with an available connection slot"**
+- The lock only supports one active connection. Ensure the Argo app is closed on your phone and no other device is connected to the lock.
 
-**Lock not discovered during setup**
-- Ensure Bluetooth is enabled on your Home Assistant device
-- Move closer to the lock during setup
-- Check that the lock is powered and responsive
-
-**Authentication failed**
-- Verify the user was properly added in the Argo app
-- Ensure the correct UUID was entered during setup
-- Try generating a new identity if issues persist
-
-**Authentication failed or logs not accessible**
-- Ensure the **"Login"** permission is enabled for the HA user in the Argo app — this is required for the integration to function
-- If automations are intermittently denied, enable the **"VIP"** option on the HA user so it is never blocked by time profiles or other access restrictions
-
-### Debug Logging
-
-Enable debug logging in Home Assistant:
-
-```yaml
-logger:
-  default: warning
-  logs:
-    custom_components.iseo_argo_ble: debug
-```
+**"Auth failed" during Master Card scan**
+- Ensure you click **Submit** in Home Assistant **before** scanning the card. The lock must be expecting the command when the card is scanned.
 
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🤝 Contributing
-
-Contributions are welcome! See [DEVELOPERS.md](DEVELOPERS.md) for detailed development setup, guidelines, and technical documentation.
-
 ## 🙏 Acknowledgments
 
-- ISEO and Argo for creating the original smart lock system
-- The Home Assistant community for the excellent integration platform
-- Contributors to the protocol documentation and implementation
+- ISEO and Argo for creating the smart lock system.
+- The Home Assistant community for the excellent integration platform.
+- Contributors to the protocol documentation and implementation.
 
 ## ⚖️ Legal
 

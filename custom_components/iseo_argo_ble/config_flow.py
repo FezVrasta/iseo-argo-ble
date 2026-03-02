@@ -8,7 +8,7 @@ from typing import Any
 
 import voluptuous as vol
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, generate_private_key
+from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, derive_private_key, generate_private_key
 from homeassistant import config_entries
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
@@ -23,8 +23,16 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
 )
 
-from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, is_iseo_advertisement
-from .const import CONF_ADDRESS, CONF_PRIV_SCALAR, CONF_USER_MAP, CONF_UUID, DOMAIN
+from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, UserSubType, is_iseo_advertisement
+from .const import (
+    CONF_ADDRESS,
+    CONF_PRIV_SCALAR,
+    CONF_USER_MAP,
+    CONF_USER_SUBTYPE,
+    CONF_UUID,
+    DEFAULT_USER_SUBTYPE,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -78,6 +86,9 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._uuid_hex:    str = ""
         self._priv_scalar: str = ""
         self._priv:        Any = None
+        self._user_subtype: int = DEFAULT_USER_SUBTYPE
+        self._bt_users:    list = []
+        self._user_map:    dict = {}
 
     # ── Step 1: pick a lock from HA's BLE cache ───────────────────────────
     async def async_step_user(
@@ -103,8 +114,9 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._uuid_hex    = new_uuid.hex()
             self._priv_scalar = hex(priv_int)
             self._priv        = priv
+            self._user_subtype = UserSubType.BT_GATEWAY
 
-            return await self.async_step_show_uuid()
+            return await self.async_step_gw_register()
 
         # Query HA's BLE cache (re-queried every time the form is shown, so
         # the user can wake the lock and click Submit to refresh the list).
@@ -170,6 +182,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._uuid_hex    = new_uuid.hex()
         self._priv_scalar = hex(priv_int)
         self._priv        = priv
+        self._user_subtype = UserSubType.BT_GATEWAY
 
         self.context["title_placeholders"] = {"name": self._device_name}
         return await self.async_step_bluetooth_confirm()
@@ -179,113 +192,162 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Confirm the discovered lock before proceeding to enrollment."""
         if user_input is not None:
-            return await self.async_step_show_uuid()
+            return await self.async_step_gw_register()
 
         return self.async_show_form(
             step_id="bluetooth_confirm",
             description_placeholders={"name": self._device_name},
         )
 
-    # ── Step 2: show UUID + Argo app instructions ─────────────────────────
-    async def async_step_show_uuid(
+    async def async_step_gw_register(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Display the UUID and walk the user through the Argo app setup."""
-        if user_input is not None:
-            return await self.async_step_enroll()
-
-        return self.async_show_form(
-            step_id="show_uuid",
-            data_schema=vol.Schema({}),
-            description_placeholders={"uuid": self._uuid_hex.upper()},
-        )
-
-    # ── Step 3: warn about door opening, then enroll public key ───────────
-    async def async_step_enroll(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """
-        Send TLV_OPEN to enroll the public key on the lock.
-        This also physically opens the lock momentarily — warn the user.
-        open_lock() MUST be called before any other command (read_users,
-        read_logs) because it is what activates the newly added user on
-        the lock and stores the public key in the whitelist.
-        """
+        """Step 1: Register the UUID as a Gateway (requires Master Card)."""
         errors: dict[str, str] = {}
-
         if user_input is not None:
+            _LOGGER.debug("Starting Gateway registration for %s", self._address)
             client = IseoClient(
                 address       = self._address,
                 uuid_bytes    = bytes.fromhex(self._uuid_hex),
                 identity_priv = self._priv,
+                subtype       = self._user_subtype,
                 ble_device    = async_ble_device_from_address(
                     self.hass, self._address, connectable=True
                 ),
             )
             try:
-                await client.open_lock()
-            except IseoAuthError:
+                await client.register_user(name="Home Assistant")
+                return await self.async_step_gw_register_logs()
+            except (IseoConnectionError, IseoAuthError) as exc:
+                _LOGGER.error("Gateway registration failed: %s", exc)
                 errors["base"] = "auth_failed"
-            except IseoConnectionError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                errors["base"] = "unknown"
-            else:
-                return await self.async_step_verify_permissions()
 
         return self.async_show_form(
-            step_id="enroll",
-            data_schema=vol.Schema({}),
+            step_id="gw_register",
+            description_placeholders={"uuid": self._uuid_hex.upper()},
             errors=errors,
         )
 
-    # ── Step 4: verify Login permission via TLV_LOGIN + user list check ───
-    async def async_step_verify_permissions(
+    async def async_step_gw_register_logs(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """
-        Called after open_lock() has activated the user.
-        The check runs automatically on entry (and again on every Submit).
-        If it passes the config entry is created immediately without showing
-        a form; the form only appears when the check fails, giving the user
-        specific instructions on what to fix before retrying.
-        """
+        """Step 2: Enable log notifications for the Gateway (requires Master Card)."""
         errors: dict[str, str] = {}
-
-        client = IseoClient(
-            address       = self._address,
-            uuid_bytes    = bytes.fromhex(self._uuid_hex),
-            identity_priv = self._priv,
-            ble_device    = async_ble_device_from_address(
-                self.hass, self._address, connectable=True
-            ),
-        )
-        try:
-            users = await client.read_users()
-        except IseoAuthError:
-            errors["base"] = "login_permission_missing"
-        except IseoConnectionError:
-            errors["base"] = "cannot_connect"
-        except Exception:
-            errors["base"] = "unknown"
-        else:
-            our_uuid = self._uuid_hex.lower()
-            if not any(u.uuid_hex.lower() == our_uuid for u in users):
-                errors["base"] = "user_not_found"
-            else:
-                return self.async_create_entry(
-                    title=self._device_name or f"ISEO Lock ({self._address})",
-                    data={
-                        CONF_ADDRESS:     self._address,
-                        CONF_UUID:        self._uuid_hex,
-                        CONF_PRIV_SCALAR: self._priv_scalar,
-                    },
-                )
+        if user_input is not None:
+            _LOGGER.debug("Starting Gateway log registration for %s", self._address)
+            client = IseoClient(
+                address       = self._address,
+                uuid_bytes    = bytes.fromhex(self._uuid_hex),
+                identity_priv = self._priv,
+                subtype       = self._user_subtype,
+                ble_device    = async_ble_device_from_address(
+                    self.hass, self._address, connectable=True
+                ),
+            )
+            try:
+                # Use the simplified client method which has a long internal timeout
+                await client.gw_register_log_notif()
+                return await self.async_step_gw_fetch_users()
+            except (IseoConnectionError, IseoAuthError) as exc:
+                _LOGGER.error("Gateway log registration failed: %s", exc)
+                errors["base"] = "auth_failed"
+            except Exception as exc:
+                _LOGGER.exception("Unexpected error during Gateway log registration")
+                errors["base"] = "unknown"
 
         return self.async_show_form(
-            step_id="verify_permissions",
+            step_id="gw_register_logs",
             data_schema=vol.Schema({}),
             errors=errors,
+        )
+
+    async def async_step_gw_fetch_users(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 3: Fetch the user list from the lock (requires Master Card)."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            client = IseoClient(
+                address       = self._address,
+                uuid_bytes    = bytes.fromhex(self._uuid_hex),
+                identity_priv = self._priv,
+                subtype       = self._user_subtype,
+                ble_device    = async_ble_device_from_address(
+                    self.hass, self._address, connectable=True
+                ),
+            )
+            try:
+                # This will wait for master card - use skip_login=True because 
+                # we assume the lock is already in Master Mode via physical card scan.
+                self._bt_users = await client.read_users(skip_login=True)
+                return await self.async_step_map_users()
+            except (IseoConnectionError, IseoAuthError) as exc:
+                _LOGGER.error("Failed to fetch users: %s", exc)
+                errors["base"] = "auth_failed"
+
+        return self.async_show_form(
+            step_id="gw_fetch_users",
+            data_schema=vol.Schema({}),
+            errors=errors,
+        )
+
+    async def async_step_map_users(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 4: Map Argo users to HA accounts."""
+        # Display all users regardless of type (RFID, BT, PIN, etc.)
+        all_users = self._bt_users
+        
+        name_to_uuid: dict[str, str] = {
+            (u.name or u.uuid_hex[:8]): u.uuid_hex.lower()
+            for u in all_users
+        }
+
+        if user_input is not None:
+            skip_mapping = user_input.pop("ignore_all", False)
+            if not skip_mapping:
+                self._user_map = {
+                    name_to_uuid[name]: ha_uid
+                    for name, ha_uid in user_input.items()
+                    if ha_uid and name in name_to_uuid
+                }
+            
+            return self.async_create_entry(
+                title=self._device_name or f"ISEO Lock ({self._address})",
+                data={
+                    CONF_ADDRESS:      self._address,
+                    CONF_UUID:         self._uuid_hex,
+                    CONF_PRIV_SCALAR:  self._priv_scalar,
+                    CONF_USER_SUBTYPE: self._user_subtype,
+                },
+                options={
+                    CONF_USER_MAP: self._user_map,
+                }
+            )
+
+        # Fetch HA user accounts
+        ha_users = await self.hass.auth.async_get_users()
+        ha_user_options = [
+            {"value": u.id, "label": u.name or u.id}
+            for u in ha_users
+            if not u.system_generated and u.is_active
+        ]
+
+        fields: dict = {
+            vol.Optional("ignore_all", default=False): bool
+        }
+        for u in all_users:
+            name = u.name or u.uuid_hex[:8]
+            fields[vol.Optional(name)] = SelectSelector(
+                SelectSelectorConfig(
+                    options=ha_user_options,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+
+        return self.async_show_form(
+            step_id="map_users",
+            data_schema=vol.Schema(fields),
         )
 
 
@@ -294,23 +356,46 @@ class IseoOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._config_entry = config_entry
+        self._bt_users: list = []
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        # Get cached users from coordinator (no fresh BLE connection needed).
-        coordinator = self.hass.data[DOMAIN][self._config_entry.entry_id]["coordinator"]
-        bt_users = [u for u in coordinator.users if u.user_type == 17]  # BT users only
+        """First step of options flow: refresh user list (requires card)."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            coordinator = self.hass.data[DOMAIN][self._config_entry.entry_id]["coordinator"]
+            
+            try:
+                # Use the coordinator's existing client instance to reuse the connection slot
+                coordinator.client._ble_device = async_ble_device_from_address(
+                    self.hass, coordinator._entry.data[CONF_ADDRESS], connectable=True
+                )
+                self._bt_users = await coordinator.client.read_users(skip_login=True)
+                return await self.async_step_map_users()
+            except (IseoConnectionError, IseoAuthError) as exc:
+                _LOGGER.error("Failed to refresh users: %s", exc)
+                errors["base"] = "auth_failed"
 
-        # Build a name → uuid_hex lookup for the save step.
-        # Keys in the form are Argo friendly names (readable labels); values stored are UUIDs.
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({}),
+            errors=errors,
+        )
+
+    async def async_step_map_users(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Second step of options flow: map users."""
+        # Display all users regardless of type (RFID, BT, PIN, etc.)
+        all_users = self._bt_users
+
         name_to_uuid: dict[str, str] = {
             (u.name or u.uuid_hex[:8]): u.uuid_hex.lower()
-            for u in bt_users
+            for u in all_users
         }
 
         if user_input is not None:
-            # Convert form keys (Argo names) back to stable UUID keys before storing.
             mapping = {
                 name_to_uuid[name]: ha_uid
                 for name, ha_uid in user_input.items()
@@ -319,7 +404,6 @@ class IseoOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data={CONF_USER_MAP: mapping})
 
         current_map: dict[str, str] = self._config_entry.options.get(CONF_USER_MAP, {})
-        # Invert current_map (uuid → ha_uid) to (name → ha_uid) for pre-population.
         uuid_to_name = {v: k for k, v in name_to_uuid.items()}
         name_defaults: dict[str, str] = {
             uuid_to_name[uuid_key]: ha_uid
@@ -327,7 +411,6 @@ class IseoOptionsFlow(config_entries.OptionsFlow):
             if uuid_key in uuid_to_name
         }
 
-        # Fetch HA user accounts for the select options.
         ha_users = await self.hass.auth.async_get_users()
         ha_user_options = [
             {"value": u.id, "label": u.name or u.id}
@@ -335,9 +418,8 @@ class IseoOptionsFlow(config_entries.OptionsFlow):
             if not u.system_generated and u.is_active
         ]
 
-        # Build schema: one SelectSelector per BT user, keyed by Argo name (used as label).
         fields: dict = {}
-        for u in bt_users:
+        for u in all_users:
             name    = u.name or u.uuid_hex[:8]
             default = name_defaults.get(name)
             desc    = {"suggested_value": default} if default else {}
@@ -349,7 +431,7 @@ class IseoOptionsFlow(config_entries.OptionsFlow):
             )
 
         return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(fields) if fields else vol.Schema({}),
-            description_placeholders={"count": str(len(bt_users))},
+            step_id="map_users",
+            data_schema=vol.Schema(fields),
+            description_placeholders={"count": str(len(all_users))},
         )

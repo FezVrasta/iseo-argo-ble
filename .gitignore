@@ -1,5 +1,5 @@
 iseo_reference
-iseo_identity.json
+iseo_identity.json*
 .DS_Store
 iseo_poc.py
 test_decrypt.py

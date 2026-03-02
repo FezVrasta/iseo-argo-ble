@@ -13,8 +13,15 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, LogEntry, UserEntry
-from .const import CONF_ADDRESS, CONF_USER_MAP, DOMAIN, EVENT_TYPE
+from .ble_client import (
+    IseoAuthError,
+    IseoClient,
+    IseoConnectionError,
+    LogEntry,
+    UserEntry,
+    UserSubType,
+)
+from .const import CONF_ADDRESS, CONF_USER_MAP, CONF_USER_SUBTYPE, DOMAIN, EVENT_TYPE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -124,6 +131,7 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
         entry: ConfigEntry,
         uuid_bytes: bytes,
         identity_priv: Any,
+        user_subtype: int = UserSubType.BT_SMARTPHONE,
     ) -> None:
         super().__init__(
             hass,
@@ -134,6 +142,7 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
         self._entry         = entry
         self._uuid_bytes    = uuid_bytes
         self._identity_priv = identity_priv
+        self._user_subtype  = user_subtype
         self._store         = Store(hass, _STORAGE_VERSION, f"{DOMAIN}_{entry.entry_id}_log")
         self._last_ts:       datetime | None = None
         self._baseline_set:  bool            = False
@@ -142,6 +151,15 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
         self._user_dir_ts:   datetime | None = None
         # Full user list from last whitelist fetch
         self._users:         list[UserEntry] = []
+
+        # Maintain a single client instance to reuse connection slots
+        self.client = IseoClient(
+            address       = entry.data[CONF_ADDRESS],
+            uuid_bytes    = uuid_bytes,
+            identity_priv = identity_priv,
+            subtype       = user_subtype,
+            ble_device    = async_ble_device_from_address(hass, entry.data[CONF_ADDRESS], connectable=True),
+        )
 
     @property
     def user_dir(self) -> dict[str, str]:
@@ -155,15 +173,12 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
 
     async def _refresh_user_dir(self) -> None:
         """Fetch the whitelist from the lock and rebuild the name directory."""
-        address = self._entry.data[CONF_ADDRESS]
-        client = IseoClient(
-            address       = address,
-            uuid_bytes    = self._uuid_bytes,
-            identity_priv = self._identity_priv,
-            ble_device    = async_ble_device_from_address(self.hass, address, connectable=True),
-        )
         try:
-            users: list[UserEntry] = await client.read_users()
+            # Re-read BLE device just in case it moved/changed
+            self.client._ble_device = async_ble_device_from_address(
+                self.hass, self._entry.data[CONF_ADDRESS], connectable=True
+            )
+            users: list[UserEntry] = await self.client.read_users(skip_login=True)
         except (IseoConnectionError, IseoAuthError) as exc:
             _LOGGER.debug("User directory refresh failed: %s", exc)
             return
@@ -190,15 +205,15 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
             self._baseline_set = bool(stored.get("baseline_set", False))
 
     async def _async_update_data(self) -> "LogEntry | None":
-        address = self._entry.data[CONF_ADDRESS]
-        client = IseoClient(
-            address       = address,
-            uuid_bytes    = self._uuid_bytes,
-            identity_priv = self._identity_priv,
-            ble_device    = async_ble_device_from_address(self.hass, address, connectable=True),
-        )
         try:
-            entries = await client.read_logs(start=0, max_entries=_MAX_ENTRIES_PER_POLL)
+            # Re-read BLE device just in case it moved/changed
+            self.client._ble_device = async_ble_device_from_address(
+                self.hass, self._entry.data[CONF_ADDRESS], connectable=True
+            )
+            if self._user_subtype == UserSubType.BT_GATEWAY:
+                entries = await self.client.gw_read_unread_logs(connect_timeout=20.0)
+            else:
+                entries = await self.client.read_logs(start=0, max_entries=_MAX_ENTRIES_PER_POLL)
         except (IseoConnectionError, IseoAuthError) as exc:
             raise UpdateFailed(f"Log fetch failed: {exc}") from exc
 

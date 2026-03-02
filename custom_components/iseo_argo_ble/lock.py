@@ -16,8 +16,8 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
-from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, LockState
-from .const import CONF_ADDRESS, CONF_UUID, DOMAIN
+from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, LockState, UserSubType
+from .const import CONF_ADDRESS, CONF_USER_MAP, CONF_USER_SUBTYPE, CONF_UUID, DEFAULT_USER_SUBTYPE, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,9 +37,10 @@ async def async_setup_entry(
     # Private key was already derived once in __init__.async_setup_entry.
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     uuid_bytes  = bytes.fromhex(entry.data[CONF_UUID])
+    subtype     = entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE)
 
     async_add_entities(
-        [IseoLockEntity(entry, uuid_bytes, coordinator._identity_priv)],
+        [IseoLockEntity(entry, uuid_bytes, coordinator._identity_priv, subtype)],
         update_before_add=False,
     )
 
@@ -56,10 +57,12 @@ class IseoLockEntity(LockEntity):
         entry: ConfigEntry,
         uuid_bytes: bytes,
         identity_priv: Any,
+        user_subtype: int = UserSubType.BT_SMARTPHONE,
     ) -> None:
         self._entry         = entry
         self._uuid_bytes    = uuid_bytes
         self._identity_priv = identity_priv
+        self._user_subtype  = user_subtype
         self._relock_task:  asyncio.Task | None = None
         self._ble_lock      = asyncio.Lock()
         self._door_status_supported: bool | None = None  # None = not yet probed
@@ -97,6 +100,7 @@ class IseoLockEntity(LockEntity):
             address       = address,
             uuid_bytes    = self._uuid_bytes,
             identity_priv = self._identity_priv,
+            subtype       = self._user_subtype,
             ble_device    = async_ble_device_from_address(self.hass, address, connectable=True),
         )
         try:
@@ -174,11 +178,29 @@ class IseoLockEntity(LockEntity):
             address       = address,
             uuid_bytes    = self._uuid_bytes,
             identity_priv = self._identity_priv,
+            subtype       = self._user_subtype,
             ble_device    = async_ble_device_from_address(self.hass, address, connectable=True),
         )
         try:
             async with self._ble_lock:
-                await client.open_lock()
+                if self._user_subtype == UserSubType.BT_GATEWAY:
+                    # Use credential-less remote opening.
+                    # Try to identify the HA user and map it to an Argo name.
+                    remote_name = "Home Assistant"
+                    if self._context and self._context.user_id:
+                        coordinator = self.hass.data[DOMAIN][self._entry.entry_id]["coordinator"]
+                        user_map: dict[str, str] = self._entry.options.get(CONF_USER_MAP, {})
+                        
+                        # Find the Argo UUID mapped to this HA user ID
+                        # user_map is {uuid_hex: ha_user_id}
+                        argo_uuid = next((u for u, h in user_map.items() if h == self._context.user_id), None)
+                        if argo_uuid:
+                            # Resolve the UUID to a friendly name from the lock's whitelist
+                            remote_name = coordinator.user_dir.get(argo_uuid.lower(), f"User {argo_uuid[:8]}")
+
+                    await client.gw_open(remote_user_name=remote_name)
+                else:
+                    await client.open_lock()
         except IseoAuthError as exc:
             self._set_locked()
             raise HomeAssistantError(

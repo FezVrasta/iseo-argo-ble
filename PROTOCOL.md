@@ -9,15 +9,15 @@ This document is the canonical reference for everything in this repo.
 
 ```
 iseo_ble/
-├── iseo_cli.py                          CLI tool (scan / open / status / logs / identity)
+├── iseo_cli.py                          CLI tool (scan / open / gw-open / status / logs / identity / delete-user)
 ├── iseo_identity.json                   CLI identity: UUID hex + priv_scalar hex
 ├── PROTOCOL.md                          ← this file
 └── custom_components/iseo_argo_ble/
-    ├── __init__.py                      HA integration entry-point (setup / unload)
+    ├── __init__.py                      HA integration entry-point (setup / unload / actions)
     ├── manifest.json                    HA manifest (domain, deps, version)
     ├── const.py                         Shared constants (DOMAIN, CONF_* keys)
-    ├── config_flow.py                   HA UI config flow (device picker → register)
-    ├── lock.py                          HA LockEntity (unlock / poll state)
+    ├── config_flow.py                   HA UI config flow (device picker → register wizard)
+    ├── lock.py                          HA LockEntity (unlock / poll state / user-aware logging)
     └── ble_client.py                    ★ Standalone protocol module (no HA deps)
 ```
 
@@ -106,15 +106,17 @@ Every SLIP payload is a CSL frame:
 | 5 | 2 | Transaction number TA (big-endian) |
 | 7 | 1 | CRC-8 of bytes 0–6 |
 
-`version = 2`. TA increments by 1 with every sent frame.
+`version = 2`. TA **must start at 1** for every new session. Handshakes must start with `Session ID = 0`.
 
-### Frame types
+### Frame types (ftype)
 
-| Value | Name |
-|-------|------|
-| 1 | SESSION_REQUEST |
-| 2 | SESSION_HANDSHAKE |
-| 4 | DATA |
+| Value | Name | Description |
+|-------|------|-------------|
+| 1 | SESSION_REQUEST | Start of handshake |
+| 2 | SESSION_HANDSHAKE | Handshake steps 2-4 |
+| 3 | SESSION_FIN | Close session |
+| 4 | DATA | Application payload (SBT) |
+| 5 | ERROR | CSL-level error (e.g. invalid session or busy) |
 
 ### Payload encryption
 
@@ -201,7 +203,7 @@ Carried inside the CSL payload.
 - Lock responses also include a `Status` byte immediately after `Opcode`:
   `[Opcode 1B][Status 1B][Reserved 4B][Payload NB][Checksum 1B]`
 - Checksum: rotating-shift accumulator over all preceding bytes.
-- Status `0` = OK; `3` = auth/permission error (most common failure).
+- Status `0` = OK.
 
 ---
 
@@ -226,16 +228,22 @@ The **outer tag** encodes the user type — the inner tags are only emitted when
 
 | Inner tag | Name | Format | Notes |
 |-----------|------|--------|-------|
-| 0 | SubType | UINT8 | Optional sub-classification; omit for plain BT user |
+| 0 | SubType | UINT8 | **16=Smartphone, 17=Gateway** |
 | 1 | UUID | 16 bytes | Raw UUID (not string); **always present** |
 | 2 | Description | UTF-8 string | Human-readable user name; optional |
 | 3 | Options | UINT8 bitmask | See SbtUserOptions below; optional |
 | 4 | CreationTs | UINT32 BE | Creation/last-modified Unix epoch; optional |
 | 5 | ExtraPin | 7 bytes BCD | Login PIN packed right-aligned; omit if empty |
 | 7 | ExtraPinOptions | — | PIN options; optional |
+| 12 | Permissions | UINT8 | bitmask for login/admin rights |
 | 32 | PublicKey | 56 bytes | X‖Y of SECP224R1 public key; TLV_OPEN only |
 
-`_tlv_user_bt(uuid, pub_key=None)` builds the Tag-17 wrapper.
+### User SubTypes (Tag 0)
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 16 (0x10) | BT_SMARTPHONE | Standard phone user |
+| 17 (0x11) | BT_GATEWAY | Remote access gateway (advanced protocol) |
 
 ### SbtUserOptions bitmask (Tag 3)
 
@@ -246,13 +254,6 @@ The **outer tag** encodes the user type — the inner tags are only emitted when
 
 Both bits must be set in the Argo app for a user to call TLV_LOGIN + READ_LOG.
 
-### TLV_INFO response tag map (Tag 4 / Tag 5)
-
-| Tag | Name | Format | Notes |
-|-----|------|--------|-------|
-| 4 | Capabilities | multi-byte, big-endian | Bit 7 of first byte = door status supported |
-| 5 | SystemState | UINT16 BE | Bit 11 (`0x0800`) = door is closed |
-
 ---
 
 ## Opcodes reference
@@ -260,19 +261,16 @@ Both bits must be set in the Argo app for a user to call TLV_LOGIN + READ_LOG.
 | Opcode | Constant | Direction | Description |
 |--------|----------|-----------|-------------|
 | 23 | `_OP_READ_LOG` | app→lock | READ_LOG_INFO — paginated access log |
-| 29 | — | app→lock | OEM_LOGIN — password-based admin login (Argo app internal) |
-| 32 | `_OP_TLV_INFO` | app→lock | **Dual use**: (a) empty payload → read state/capabilities; (b) SbtInfoClient payload → exchangeInfo, announces client FL |
-| 41 | `_OP_TLV_LOGIN` | app→lock | TLV_LOGIN — identify as BT user for admin commands (requires prior exchangeInfo) |
+| 32 | `_OP_TLV_INFO` | app→lock | Read state/capabilities or exchangeInfo |
+| 33 | `_OP_TLV_READ_BT_USER`| app→lock | READ_BT_USER — read single user details |
+| 36 | `_OP_TLV_READ_USER_BLOCK`| app→lock | READ_USER_BLOCK — paginated whitelist read |
+| 38 | `_OP_TLV_STORE_USER_BLOCK`| app→lock | STORE_USER_BLOCK — register/update user |
+| 40 | `_OP_TLV_ERASE_USER_BLOCK`| app→lock | ERASE_USER_BLOCK — remove user |
+| 41 | `_OP_TLV_LOGIN` | app→lock | TLV_LOGIN — identify as BT user or OEM Login |
 | 43 | `_OP_TLV_OPEN` | app→lock | TLV_OPEN — open the lock |
-
-### SbtInfoClient TLV payload (used in exchangeInfo)
-
-| Inner tag | Name | Format | Notes |
-|-----------|------|--------|-------|
-| 1 | featureLevel | UINT16 BE | Client FL; app always sends FL_9 = `00 09` |
-| 16 (0x10) | tzConfigRawData | raw bytes | Optional; omit if not cached |
-
-Minimal `exchangeInfo` wire payload: `01 02 00 09` (4 bytes).
+| 64 | `_OP_TLV_LOG_NOTIF_REGISTER` | app→lock | Enable gateway unread log tracking |
+| 65 | `_OP_TLV_LOG_NOTIF_UNREGISTER` | app→lock | Disable gateway log tracking |
+| 66 | `_OP_TLV_LOG_NOTIF_GET_UNREAD`| app→lock | Fetch unread log entries (Gateway only) |
 
 ---
 
@@ -295,118 +293,52 @@ Minimal `exchangeInfo` wire payload: `01 02 00 09` (4 bytes).
 | 0 | WHITELIST_CREDENTIAL |
 | 1 | VIRTUAL_CREDENTIAL |
 | 2 | WHITELIST_CARRIED_CREDENTIAL_BT_GW |
-| 3 | CREDENTIAL_LESS |
-| 4 | WHITELIST_CARRIED_CREDENTIAL_BT_READER |
+| 3 | CREDENTIAL_LESS (Gateway Mode) |
 
 ---
 
-## Operation flows
+## Master Mode & Registration
 
-### open_lock()
+ISEO locks use a **Master Mode** for administrative tasks (storing/erasing users). This mode can be entered in two ways:
+1.  **Master Password**: Sending a Master Login (Opcode 41) with the password string.
+2.  **Master Card**: Physically scanning the Master Card. The lock enters a temporary Master Mode (LEDs blinking).
 
-```
-BLE connect
-  → SLIP/CSL ECDH handshake (3-way)
-  → drain optional unsolicited CSL frame (2 s)
-  → TLV_OPEN (op=43)
-      Tag 48: OpenType = NORMAL (0x00)
-      Tag 49: ValidationMode = WHITELIST_CREDENTIAL (0x00)
-      Tag 17: BT user wrapper
-          Tag 0:  type = 0x10
-          Tag 1:  UUID (16B)
-          Tag 32: public key (56B)   ← included for initial enrollment
-  ← status=0 → success
-BLE disconnect
-```
-
-Tag 32 (public key) is included on every call — the lock uses it to
-enrol new keys and verify existing ones.
-
-### read_state()
-
-```
-BLE connect
-  → handshake
-  → drain optional frame
-  → TLV_INFO (op=32, no payload)
-  ← response
-      Tag 4: capabilities (check bit 7 for door sensor)
-      Tag 5: system state (check bit 11 for door_closed)
-BLE disconnect
-```
-
-Returns `LockState(door_closed=None)` if capability bit is absent.
-
-### read_logs()
-
-```
-BLE connect
-  → handshake
-  → drain optional frame
-  → exchangeInfo (op=32, payload=SbtInfoClient)
-      Tag 1: featureLevel = FL_9 (0x0009 UINT16 BE) → wire: 01 02 00 09
-  ← SbtInfoServer response (ignored; just confirms session is FL_9-capable)
-  → TLV_LOGIN (op=41)
-      Tag 17: BT user wrapper   ← outer tag encodes user type (BLUETOOTH)
-          Tag 1: UUID (16B)     ← only field sent; no Tag 0, no Tag 32
-  ← status=0 → proceed
-  loop:
-    → READ_LOG (op=23)
-        [index UINT16 BE][page_size UINT16 BE]
-    ← response
-        [count UINT16 BE][more_flag UINT8][entries count×71B]
-        status ∈ {7, 80} → EOF, stop
-  return list[LogEntry]
-BLE disconnect
-```
-
-### LogEntry wire format (71 bytes)
-
-| Offset | Size | Field |
-|--------|------|-------|
-| 0 | 1 | event_code (UINT8) |
-| 1 | 32 | extra_description (UTF-8, space-padded) |
-| 33 | 32 | user_info (UTF-8, UUID or name) |
-| 65 | 1 | list_code (UINT8) |
-| 66 | 1 | battery % (UINT8) |
-| 67 | 4 | timestamp (UINT32 BE, Unix epoch) |
+**The "Scan then Click" Workflow**:
+Commands requiring Master Mode (like user registration) must be sent while the lock is in this state. The client should send the command, and if the card is scanned within the timeout window, the lock will process the command.
 
 ---
 
-## Identity file (`iseo_identity.json`)
+## Gateway Mode (BT_GATEWAY)
 
-```json
-{
-  "uuid": "8f96b3a8563c4878aa070b5168a85265",
-  "priv_scalar": "0x1a2b3c..."
-}
-```
+When Home Assistant identifies as a Gateway (subtype 17), it gains access to:
 
-- `uuid`: 32 hex chars = 16 raw bytes. Registered in the Argo app by an admin.
-- `priv_scalar`: Private key integer (SECP224R1). The corresponding public key
-  (X‖Y, 56 bytes) is derived on the fly and sent in Tag 32 of TLV_OPEN.
+### Credential-less Opening (`gwOpen`)
+- **Validation Mode**: 3 (`CREDENTIAL_LESS`)
+- **Payload**: Includes **Tag 64** (UTF-8 string) which is the name of the remote user.
+- **Audit Log**: The lock records this as "Opened by [Remote User] via [Gateway Name]".
 
-The lock identifies callers by **ECDH public key** (matched during the
-session handshake), not by the UUID in the payload.
+### Unread Log Tracking (`gw_logs`)
+- **Opcode 66**: Specifically fetches only the log entries that occurred since the last time this gateway UUID polled the lock.
+- **Opcode 64**: Must be called once (in Master Mode) to enable this tracking for the UUID.
 
 ---
 
-## Reference files (`iseo_reference/`)
+## Error Codes
 
-Key classes for cross-referencing the protocol:
+### CSL Error Codes (Frame Type 5)
+| Code | Meaning |
+|------|---------|
+| 1 | EC_SESSION_ERROR (Invalid Session ID or sequence) |
+| 8 | EC_AUTH_ERROR (Handshake failed) |
+| 10 | Protocol violation (e.g. TA started at 0) |
 
-| Class | What it contains |
-|-------|-----------------|
-| `SbtArgoDevice` | Top-level device; orchestrates TLV_OPEN → TLV_LOGIN flow |
-| `SbtArgoTaskLoginBtUser` | Task that calls TLV_LOGIN (opcode 41) |
-| `SbtArgoTaskLoginPassword` | Task that calls OEM_LOGIN (opcode 29, password) |
-| `DefaultSbtClientFl3MasterCmdHandler` | FL3 handler: `performBtUserLogin()`, `openAdvWithWhitelistCred()` |
-| `SbtUserDataTlvCodec` | Encodes/decodes the Tag-17 BT user TLV |
-| `SbtUserOptions` | Bitmask constants (VIP=bit0, masterLoginEnabled=bit5) |
-| `SbtUserExtraPin` | Optional login PIN (TLV tag 5); `EMPTY` sentinel |
-| `SbtLogEntryCodec` | Decodes 71-byte log entries |
-| `SbtOpenType` | Enum for Tag 48 values |
-| `SbtOpenValidationMode` | Enum for Tag 49 values |
-| `CslFrameCodec` / `CslFrameHeader` | CSL layer encode/decode |
-| `SlipEncoder` / `SlipDecoder` | SLIP byte-stuffing |
-| `SbtClientSendReceiveHelper` | SBT frame builder / parser |
+### SBT Status Codes (Command Result)
+| Status | Meaning |
+|--------|---------|
+| 0 | OK |
+| 3 | CMD_UNSUPPORTED (Invalid feature level) |
+| 5 | MASTER_MODE_REQUIRED |
+| 9 | NO_PERMISSION (Admin/Login rights missing) |
+| 64 | USER_ID_NOT_FOUND |
+| 87 | CMD_EC_DENIED |
+| 89 | CMD_EC_AUTH_MISMATCH (Subtype or Key mismatch) |

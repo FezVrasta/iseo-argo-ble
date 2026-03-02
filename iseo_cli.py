@@ -9,16 +9,24 @@ Commands
 --------
   scan                        List nearby BLE devices (sorted by RSSI).
   open    <address>           Send TLV_OPEN — opens the lock.
+  gw-open <address>           Send TLV_OPEN (Gateway mode) — credential-less opening.
   status  <address>           Read TLV_INFO — show door open/closed state.
   logs    <address>           Fetch access log entries.
+  gw-logs <address>           Fetch unread Gateway log entries (opcode 66).
+  gw-register-logs <address>  Enable log notifications for this Gateway (opcode 64).
   users   <address>           List all enrolled users (requires admin rights).
   identity                    Show the current identity UUID.
   new-identity                Generate a new UUID + keypair and save it.
+  register-gateway <address>  Register identity as a Gateway (requires master password).
+  erase-identity   <address>  Remove current identity from lock whitelist.
+  delete-user      <address>  Remove specific user by UUID (requires admin rights).
 
 Global options
 --------------
   --identity PATH             Identity file (default: iseo_identity.json
                               next to this script).
+  --subtype {smartphone,gateway}
+                              User subtype (default: smartphone).
   --timeout SECONDS           BLE connect timeout (default: 20).
   --debug                     Enable debug logging.
 """
@@ -35,7 +43,16 @@ from pathlib import Path
 
 # ble_client.py lives inside the component folder and has no HA dependencies.
 sys.path.insert(0, str(Path(__file__).resolve().parent / "custom_components" / "iseo_argo_ble"))
-from ble_client import IseoAuthError, IseoClient, IseoConnectionError, LogEntry, UserEntry, is_iseo_advertisement  # noqa: E402
+from ble_client import (
+    IseoAuthError,
+    IseoClient,
+    IseoConnectionError,
+    LogEntry,
+    MasterAuthError,
+    UserEntry,
+    UserSubType,
+    is_iseo_advertisement,
+)  # noqa: E402
 
 from bleak import BleakScanner
 from cryptography.hazmat.backends import default_backend
@@ -103,6 +120,7 @@ async def cmd_open(args: argparse.Namespace) -> None:
         address       = args.address,
         uuid_bytes    = uuid_bytes,
         identity_priv = priv,
+        subtype       = args.subtype,
     )
     print(f"Connecting to {args.address} …")
     try:
@@ -110,11 +128,202 @@ async def cmd_open(args: argparse.Namespace) -> None:
     except IseoAuthError as exc:
         sys.exit(
             f"Auth failed: {exc}\n"
-            "Make sure the UUID is registered in the Argo app."
+            "Make sure the UUID is registered in the Argo app with the correct subtype."
         )
     except IseoConnectionError as exc:
         sys.exit(f"Connection failed: {exc}")
     print("Lock opened.")
+
+
+async def cmd_gw_open(args: argparse.Namespace) -> None:
+    """Open the lock using Gateway remote opening mode."""
+    uuid_bytes, priv = _load_identity(args.identity)
+    client = IseoClient(
+        address       = args.address,
+        uuid_bytes    = uuid_bytes,
+        identity_priv = priv,
+        subtype       = UserSubType.BT_GATEWAY,
+    )
+    print(f"Connecting to {args.address} as Gateway …")
+    try:
+        await client.gw_open(remote_user_name=args.user, connect_timeout=args.timeout)
+    except IseoAuthError as exc:
+        sys.exit(
+            f"Auth failed: {exc}\n"
+            "Make sure the UUID is registered as an ARGO GATEWAY in the app."
+        )
+    except Exception as exc:
+        sys.exit(f"Error: {exc}")
+    print(f"Lock opened (remote user: {args.user}).")
+
+
+async def cmd_gw_logs(args: argparse.Namespace) -> None:
+    """Fetch unread access log entries for this Gateway."""
+    uuid_bytes, priv = _load_identity(args.identity)
+    client = IseoClient(
+        address       = args.address,
+        uuid_bytes    = uuid_bytes,
+        identity_priv = priv,
+        subtype       = UserSubType.BT_GATEWAY,
+    )
+    print(f"Connecting to {args.address} to fetch unread Gateway logs …")
+    try:
+        entries = await client.gw_read_unread_logs(connect_timeout=args.timeout)
+    except Exception as exc:
+        sys.exit(f"Error: {exc}")
+
+    if not entries:
+        print("No new log entries.")
+        return
+
+    print(f"Fetched {len(entries)} new log entries:")
+    for entry in entries:
+        print(
+            f"[{entry.timestamp.isoformat()}] Code={entry.event_code:02d} "
+            f"User={entry.user_info:<16} Desc={entry.extra_description}"
+        )
+
+
+async def cmd_gw_register_log_notif(args: argparse.Namespace) -> None:
+    """Register Gateway for log notifications (opcode 64)."""
+    uuid_bytes, priv = _load_identity(args.identity)
+    client = IseoClient(
+        address       = args.address,
+        uuid_bytes    = uuid_bytes,
+        identity_priv = priv,
+        subtype       = UserSubType.BT_GATEWAY,
+    )
+    print(f"Connecting to {args.address} to register for log notifications …")
+    try:
+        await client.gw_register_log_notif(
+            master_password = args.password,
+            connect_timeout = args.timeout,
+        )
+    except MasterAuthError as exc:
+        sys.exit(f"Master login failed: {exc}. Check your admin password.")
+    except Exception as exc:
+        sys.exit(f"Registration failed: {exc}")
+        
+    print("Success! Gateway registered for real-time log notifications.")
+
+
+async def cmd_register_gateway(args: argparse.Namespace) -> None:
+    """Register the current identity as an Argo Gateway on the lock."""
+    uuid_bytes, priv = _load_identity(args.identity)
+    client = IseoClient(
+        address       = args.address,
+        uuid_bytes    = uuid_bytes,
+        identity_priv = priv,
+        subtype       = UserSubType.BT_GATEWAY,
+    )
+    
+    print(f"Connecting to {args.address} to register Gateway …")
+    if not args.password:
+        print("\nIMPORTANT: To register a Gateway, the lock must be in Master Mode.")
+        input("1. Press Enter now.\n2. Within 30 seconds, scan your Master Card on the lock: ")
+
+    try:
+        await client.register_user(
+            master_password = args.password,
+            name            = args.name,
+            connect_timeout = args.timeout,
+        )
+    except MasterAuthError as exc:
+        sys.exit(f"Master login failed: {exc}. Check your admin password.")
+    except Exception as exc:
+        sys.exit(f"Registration failed: {exc}")
+        
+    print(f"Success! Identity {uuid_bytes.hex().upper()} registered as Gateway '{args.name}'.")
+    print("You can now use:  iseo_cli.py gw-open <address>")
+
+
+async def cmd_erase_identity(args: argparse.Namespace) -> None:
+    """Remove the current identity from the lock's whitelist."""
+    uuid_bytes, priv = _load_identity(args.identity)
+    client = IseoClient(
+        address       = args.address,
+        uuid_bytes    = uuid_bytes,
+        identity_priv = priv,
+        subtype       = args.subtype,
+    )
+    print(f"Connecting to {args.address} to erase identity …")
+    try:
+        await client.erase_user(connect_timeout=args.timeout)
+    except Exception as exc:
+        sys.exit(f"Erase failed: {exc}")
+        
+    print(f"Success! Identity {uuid_bytes.hex().upper()} removed from lock.")
+
+
+async def cmd_delete_user(args: argparse.Namespace) -> None:
+    """Remove a specific user from the lock's whitelist (interactive)."""
+    uuid_bytes, priv = _load_identity(args.identity)
+    client = IseoClient(
+        address       = args.address,
+        uuid_bytes    = uuid_bytes,
+        identity_priv = priv,
+        subtype       = args.subtype,
+    )
+    
+    target_uuid_hex = args.uuid
+    target_subtype  = args.user_subtype
+
+    if not target_uuid_hex:
+        print(f"Connecting to {args.address} to fetch users …")
+        try:
+            users = await client.read_users(connect_timeout=args.timeout)
+        except Exception as exc:
+            sys.exit(f"Failed to fetch users: {exc}")
+
+        # Filter for BT users (Outer tag 17)
+        bt_users = [u for u in users if u.user_type == 17]
+        if not bt_users:
+            print("No Bluetooth users found on the lock.")
+            return
+
+        print("\nRegistered Bluetooth Users:")
+        for i, u in enumerate(bt_users, 1):
+            st_label = "Gateway" if u.inner_subtype == 17 else "Phone"
+            print(f" {i:2}. {u.name or '<no name>':<16} Subtype={st_label:<8} UUID={u.uuid_hex.upper()}")
+
+        try:
+            choice = input(f"\nSelect a user to delete (1-{len(bt_users)}, or Enter to cancel): ").strip()
+            if not choice:
+                print("Cancelled.")
+                return
+            idx = int(choice) - 1
+            if idx < 0 or idx >= len(bt_users):
+                print("Invalid selection.")
+                return
+            
+            selected = bt_users[idx]
+            target_uuid_hex = selected.uuid_hex
+            target_subtype  = selected.inner_subtype or 16
+        except (ValueError, EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return
+
+    # Final confirmation
+    print(f"\nTarget UUID: {target_uuid_hex.upper()}")
+    confirm = input(f"Are you SURE you want to remove this user from the lock? (type 'yes' to confirm): ").strip().lower()
+    if confirm != "yes":
+        print("Aborted.")
+        return
+
+    print("\nIMPORTANT: To delete a user, the lock must be in Master Mode.")
+    input("1. Press Enter now.\n2. Within 30 seconds, scan your Master Card on the lock: ")
+
+    print(f"Deleting user …")
+    try:
+        await client.erase_user_by_uuid(
+            uuid_bytes      = bytes.fromhex(target_uuid_hex),
+            subtype         = target_subtype,
+            connect_timeout = args.timeout,
+        )
+    except Exception as exc:
+        sys.exit(f"Delete failed: {exc}")
+        
+    print(f"Success! User {target_uuid_hex.upper()} removed from lock.")
 
 
 async def cmd_status(args: argparse.Namespace) -> None:
@@ -124,6 +333,7 @@ async def cmd_status(args: argparse.Namespace) -> None:
         address       = args.address,
         uuid_bytes    = uuid_bytes,
         identity_priv = priv,
+        subtype       = args.subtype,
     )
     print(f"Connecting to {args.address} …")
     try:
@@ -148,13 +358,19 @@ async def cmd_logs(args: argparse.Namespace) -> None:
         address       = args.address,
         uuid_bytes    = uuid_bytes,
         identity_priv = priv,
+        subtype       = args.subtype,
     )
     print(f"Connecting to {args.address} …")
+    if args.master:
+        print("\nIMPORTANT: You chose --master mode. Ensure the Master Card is scanned.")
+        input("Press Enter when ready: ")
+
     try:
         entries = await client.read_logs(
             start           = args.start,
             max_entries     = args.count,
             connect_timeout = args.timeout,
+            skip_login      = args.master,
         )
     except IseoAuthError as exc:
         sys.exit(f"Auth failed: {exc}")
@@ -193,10 +409,18 @@ async def cmd_users(args: argparse.Namespace) -> None:
         address       = args.address,
         uuid_bytes    = uuid_bytes,
         identity_priv = priv,
+        subtype       = args.subtype,
     )
     print(f"Connecting to {args.address} …")
+    if args.master:
+        print("\nIMPORTANT: You chose --master mode. Ensure the Master Card is scanned.")
+        input("Press Enter when ready: ")
+
     try:
-        users = await client.read_users(connect_timeout=args.timeout)
+        users = await client.read_users(
+            connect_timeout = args.timeout,
+            skip_login      = args.master,
+        )
     except IseoAuthError as exc:
         sys.exit(f"Auth failed: {exc}")
     except IseoConnectionError as exc:
@@ -269,6 +493,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_DEFAULT_IDENTITY,
         help=f"Identity file (default: {_DEFAULT_IDENTITY.name})",
     )
+
+    def subtype_type(val: str) -> int:
+        if val.lower() == "smartphone":
+            return UserSubType.BT_SMARTPHONE
+        if val.lower() == "gateway":
+            return UserSubType.BT_GATEWAY
+        try:
+            return int(val, 0)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"Invalid subtype: {val}")
+
+    parser.add_argument(
+        "--subtype",
+        type=subtype_type,
+        default=UserSubType.BT_SMARTPHONE,
+        help="User subtype: smartphone, gateway, or raw integer (default: smartphone)",
+    )
     parser.add_argument(
         "--timeout",
         metavar="SECONDS",
@@ -290,6 +531,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_open = sub.add_parser("open", help="Open the lock")
     p_open.add_argument("address", metavar="ADDRESS", help="Lock BLE address")
 
+    p_gw_open = sub.add_parser("gw-open", help="Open the lock (Gateway mode)")
+    p_gw_open.add_argument("address", metavar="ADDRESS", help="Lock BLE address")
+    p_gw_open.add_argument(
+        "--user", metavar="NAME", default="Home Assistant",
+        help="Remote user name to show in lock logs (default: Home Assistant)",
+    )
+
     p_status = sub.add_parser("status", help="Read door open/closed state")
     p_status.add_argument("address", metavar="ADDRESS", help="Lock BLE address")
 
@@ -303,6 +551,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--count", metavar="N", type=int, default=200,
         help="Maximum number of entries to fetch (default: 200)",
     )
+    p_logs.add_argument("--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)")
+
+    p_gw_logs = sub.add_parser("gw-logs", help="Fetch unread Gateway log entries")
+    p_gw_logs.add_argument("address", metavar="ADDRESS", help="Lock BLE address")
+
+    p_gw_reg_logs = sub.add_parser("gw-register-logs", help="Register for log notifications")
+    p_gw_reg_logs.add_argument("address", metavar="ADDRESS", help="Lock BLE address")
+    p_gw_reg_logs.add_argument("--password", help="Lock master password")
 
     p_users = sub.add_parser("users", help="List enrolled users (requires admin rights)")
     p_users.add_argument("address", metavar="ADDRESS", help="Lock BLE address")
@@ -310,9 +566,28 @@ def _build_parser() -> argparse.ArgumentParser:
         "--type", metavar="TYPE", nargs="+",
         help="Filter by user type: bluetooth rfid pin invitation fingerprint account",
     )
+    p_users.add_argument("--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)")
 
     sub.add_parser("identity", help="Show the current identity UUID")
     sub.add_parser("new-identity", help="Generate a new UUID + keypair")
+
+    p_reg_gw = sub.add_parser("register-gateway", help="Register current identity as Gateway")
+    p_reg_gw.add_argument("address", metavar="ADDRESS", help="Lock BLE address")
+    p_reg_gw.add_argument("--password", help="Lock master password (optional if Master Card is scanned first)")
+    p_reg_gw.add_argument("--name", default="Home Assistant", help="Name for the gateway user")
+
+    p_erase = sub.add_parser("erase-identity", help="Remove current identity from lock")
+    p_erase.add_argument("address", metavar="ADDRESS", help="Lock BLE address")
+    p_erase.add_argument("--password", help="Lock master password (optional if Master Card is scanned first)")
+
+    p_del_user = sub.add_parser("delete-user", help="Remove specific user (interactive if no UUID)")
+    p_del_user.add_argument("address", metavar="ADDRESS", help="Lock BLE address")
+    p_del_user.add_argument("--uuid", help="32-char hex UUID to delete (omit for interactive list)")
+    p_del_user.add_argument(
+        "--user-subtype", type=int, default=UserSubType.BT_SMARTPHONE,
+        help="Subtype of the user to delete (16=Phone, 17=Gateway)",
+    )
+    p_del_user.add_argument("--password", help="Lock master password (optional if Master Card is scanned first)")
 
     return parser
 
@@ -329,7 +604,19 @@ def main() -> None:
     else:
         logging.basicConfig(level=logging.WARNING)
 
-    async_cmds = {"scan": cmd_scan, "open": cmd_open, "status": cmd_status, "logs": cmd_logs, "users": cmd_users}
+    async_cmds = {
+        "scan":             cmd_scan,
+        "open":             cmd_open,
+        "gw-open":          cmd_gw_open,
+        "gw-logs":          cmd_gw_logs,
+        "gw-register-logs": cmd_gw_register_log_notif,
+        "status":           cmd_status,
+        "logs":             cmd_logs,
+        "users":            cmd_users,
+        "register-gateway": cmd_register_gateway,
+        "erase-identity":   cmd_erase_identity,
+        "delete-user":      cmd_delete_user,
+    }
     sync_cmds  = {"identity": cmd_identity, "new-identity": cmd_new_identity}
 
     if args.command in async_cmds:

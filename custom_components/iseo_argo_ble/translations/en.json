@@ -12,24 +12,29 @@
         "title": "ISEO Lock Discovered",
         "description": "Found a new ISEO lock nearby: **{name}**.\n\nClick **Submit** to begin setup."
       },
-      "show_uuid": {
-        "title": "Add to Argo App",
-        "description": "Add the following UUID as a new Bluetooth user in the Argo app:\n\n`{uuid}`\n\n1. Open the **Argo app**, tap your lock, then go to **Users → + → Phone with ARGO UID**\n2. Enter a name (e.g. *Home Assistant*), paste the UUID above, then tap **Save**\n3. Tap the new user and enable **Login** — this is **required** for the integration to authenticate\n4. Enable **VIP** (strongly recommended) — VIP users are never blocked by time profiles, passage mode, or other access restrictions\n\n⚠️ **The next step will open the lock.** Once you have completed the steps above, click **Submit**."
+      "gw_register": {
+        "title": "Register Gateway",
+        "description": "To register Home Assistant as a Gateway:\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
       },
-      "enroll": {
-        "title": "Enroll & Activate",
-        "description": "⚠️ **The lock is about to open.**\n\nClicking **Submit** will send an open command to the lock. The bolt will retract briefly — this activates the new user account and stores the credentials on the lock.\n\nMake sure it is safe to open the door right now, then click **Submit**."
+      "gw_register_logs": {
+        "title": "Enable Gateway Logs",
+        "description": "To receive real-time log updates, the Gateway needs one more permission:\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
       },
-      "verify_permissions": {
-        "title": "Verify Permissions",
-        "description": "The permission check failed. Fix the issue shown below, then click **Submit** to retry.\n\n> ℹ️ **The door will not open again** during this check."
+      "gw_fetch_users": {
+        "title": "Fetch User List",
+        "description": "To map your Argo users to Home Assistant accounts, Home Assistant needs to download the lock's whitelist.\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
+      },
+      "map_users": {
+        "title": "Link Argo Users to Home Assistant",
+        "description": "Select the Home Assistant account for each Argo user found on the lock. Leave a field blank to keep those events anonymous.",
+        "data": {
+          "ignore_all": "Skip this step and finish setup"
+        }
       }
     },
     "error": {
       "no_devices_found": "No ISEO locks found nearby. Make sure the lock is powered on and within Bluetooth range, then click Submit to scan again.",
-      "login_permission_missing": "Could not verify account. Make sure the UUID is added as a user in the Argo app and that the Login permission is enabled.",
-      "user_not_found": "This UUID was not found in the lock's whitelist. Please add it in the Argo app and try again.",
-      "auth_failed": "The lock rejected the request. Make sure the account was set up correctly in the Argo app.",
+      "auth_failed": "The lock rejected the request. Ensure you scanned the Master Card while the LEDs were blinking.",
       "cannot_connect": "Could not connect to the lock. Check it is powered on and within Bluetooth range.",
       "unknown": "An unexpected error occurred. Check the Home Assistant logs for details."
     },
@@ -41,8 +46,12 @@
   "options": {
     "step": {
       "init": {
+        "title": "Refresh User List",
+        "description": "To manage user mappings, Home Assistant needs to refresh the user list from the lock.\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
+      },
+      "map_users": {
         "title": "Link Argo Users to Home Assistant",
-        "description": "Select the Home Assistant account for each Argo user below. Leave a field blank to keep those events anonymous. {count} Bluetooth user(s) found.",
+        "description": "Select the Home Assistant account for each Argo user below. Leave a field blank to keep those events anonymous. {count} user(s) found.",
         "data": {}
       }
     }
