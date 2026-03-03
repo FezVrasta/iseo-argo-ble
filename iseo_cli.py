@@ -19,6 +19,8 @@ Commands
   new-identity                Generate a new UUID + keypair and save it.
   register-gateway [address]  Register identity as a Gateway (requires master password).
   register-pin     [address]  Register/Update a PIN user (requires master password).
+  disable-user     [address]  Disable a user (blocks access without deleting).
+  enable-user      [address]  Re-enable a previously disabled user.
   erase-identity   [address]  Remove current identity from lock whitelist.
   delete-user      [address]  Remove specific user by UUID (requires admin rights).
 
@@ -51,6 +53,7 @@ from ble_client import (
     IseoConnectionError,
     MasterAuthError,
     UserSubType,
+    bcd_encode_pin,
     is_iseo_advertisement,
 )  # noqa: E402
 
@@ -239,9 +242,6 @@ async def cmd_register_gateway(args: argparse.Namespace) -> None:
     )
 
     print(f"Connecting to {address} to register Gateway …")
-    if not args.password:
-        print("\nIMPORTANT: To register a Gateway, the lock must be in Master Mode.")
-        input("1. Press Enter now.\n2. Within 30 seconds, scan your Master Card on the lock: ")
 
     try:
         await client.register_user(
@@ -270,47 +270,92 @@ async def cmd_register_pin(args: argparse.Namespace) -> None:
         subtype=args.subtype,
     )
 
-    pin_uuid = args.uuid
-    if not pin_uuid:
-        # PIN users in Argo use a shortened 7-byte UUID.
-        import secrets
-        pin_uuid = secrets.token_hex(7)
-        print(f"Generated new 7-byte UUID for PIN user: {pin_uuid.upper()}")
-    elif len(pin_uuid) > 14:
-        pin_uuid = pin_uuid[:14]
-        print(f"Truncated UUID to 7 bytes (14 hex chars): {pin_uuid.upper()}")
+    # The UUID of a PIN user is its BCD-encoded PIN (7 bytes, 0xF-padded).
+    # An explicit --uuid overrides this (advanced use).
+    if args.uuid:
+        pin_uuid = args.uuid[:14] if len(args.uuid) > 14 else args.uuid
+        pin_uuid_bytes = bytes.fromhex(pin_uuid)
+    else:
+        pin_uuid_bytes = bcd_encode_pin(args.pin)
 
     print(f"Connecting to {address} to register PIN …")
     try:
         await client.register_pin_user(
-            pin_uuid_bytes=bytes.fromhex(pin_uuid),
+            pin_uuid_bytes=pin_uuid_bytes,
             pin=args.pin,
-            name=args.name or "New PIN User",
+            name=args.name or "HA PIN User",
             master_password=args.password,
             connect_timeout=args.timeout,
             skip_login=args.master,
         )
     except IseoAuthError as exc:
-        if "Master Mode Required" in str(exc) and not args.master and not args.password:
-            print("\nError: The lock requires Master Mode for this operation.")
-            print("1. Scan your physical Master Card on the lock (LEDs will blink).")
-            input("2. Press Enter once the card is scanned to retry: ")
-
-            # Retry with skip_login=True (Master Mode)
-            await client.register_pin_user(
-                pin_uuid_bytes=bytes.fromhex(pin_uuid),
-                pin=args.pin,
-                name=args.name,
-                master_password=args.password,
-                connect_timeout=args.timeout,
-                skip_login=True,
-            )
-        else:
-            sys.exit(f"Registration failed: {exc}")
+        sys.exit(f"Registration failed: {exc}\nHint: close the ARGO app before issuing commands.")
     except Exception as exc:
         sys.exit(f"Registration failed: {exc}")
 
-    print(f"Success! PIN user '{args.name or pin_uuid.upper()}' registered with UUID {pin_uuid.upper()}.")
+    print(f"Success! PIN user '{args.name or args.pin}' registered.")
+
+
+async def cmd_disable_user(args: argparse.Namespace) -> None:
+    """Disable a user on the lock (blocks access without deleting)."""
+    uuid_bytes, priv, stored_address = _load_identity(args.identity)
+    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
+
+    client = IseoClient(
+        address=address,
+        uuid_bytes=uuid_bytes,
+        identity_priv=priv,
+        subtype=args.subtype,
+    )
+
+    print(f"Connecting to {address} to disable user {args.uuid} …")
+    try:
+        await client.set_user_disabled(
+            uuid_hex=args.uuid,
+            user_type=args.user_type,
+            disabled=True,
+            connect_timeout=args.timeout,
+            master_password=args.password,
+            skip_login=args.master,
+        )
+    except ValueError as exc:
+        sys.exit(f"User not found on the lock: {exc}")
+    except Exception as exc:
+        sys.exit(f"Disable failed: {exc}")
+
+    print(f"Success! User {args.uuid} is now disabled.")
+
+
+async def cmd_enable_user(args: argparse.Namespace) -> None:
+    """Re-enable a previously disabled user."""
+    uuid_bytes, priv, stored_address = _load_identity(args.identity)
+    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
+
+    client = IseoClient(
+        address=address,
+        uuid_bytes=uuid_bytes,
+        identity_priv=priv,
+        subtype=args.subtype,
+    )
+
+    print(f"Connecting to {address} to enable user {args.uuid} …")
+    try:
+        await client.set_user_disabled(
+            uuid_hex=args.uuid,
+            user_type=args.user_type,
+            disabled=False,
+            connect_timeout=args.timeout,
+            master_password=args.password,
+            skip_login=args.master,
+        )
+    except ValueError as exc:
+        sys.exit(f"User not found on the lock: {exc}")
+    except IseoAuthError as exc:
+        sys.exit(f"Enable failed: {exc}\nHint: close the ARGO app before issuing commands.")
+    except Exception as exc:
+        sys.exit(f"Enable failed: {exc}")
+
+    print(f"Success! User {args.uuid} is now enabled.")
 
 
 async def cmd_erase_identity(args: argparse.Namespace) -> None:
@@ -332,19 +377,7 @@ async def cmd_erase_identity(args: argparse.Namespace) -> None:
             skip_login=args.master,
         )
     except IseoAuthError as exc:
-        if "Master Mode Required" in str(exc) and not args.master and not args.password:
-            print("\nError: The lock requires Master Mode for this operation.")
-            print("1. Scan your physical Master Card on the lock (LEDs will blink).")
-            input("2. Press Enter once the card is scanned to retry: ")
-
-            # Retry with skip_login=True (Master Mode)
-            await client.erase_user(
-                master_password=args.password,
-                connect_timeout=args.timeout,
-                skip_login=True,
-            )
-        else:
-            sys.exit(f"Erase failed: {exc}")
+        sys.exit(f"Erase failed: {exc}\nHint: close the ARGO app before issuing commands.")
     except Exception as exc:
         sys.exit(f"Erase failed: {exc}")
 
@@ -422,22 +455,7 @@ async def cmd_delete_user(args: argparse.Namespace) -> None:
             skip_login=args.master,
         )
     except IseoAuthError as exc:
-        if "Master Mode Required" in str(exc) and not args.master and not args.password:
-            print("\nError: The lock requires Master Mode for this operation.")
-            print("1. Scan your physical Master Card on the lock (LEDs will blink).")
-            input("2. Press Enter once the card is scanned to retry: ")
-
-            # Retry with skip_login=True (Master Mode)
-            await client.erase_user_by_uuid(
-                uuid_bytes=bytes.fromhex(target_uuid_hex),
-                user_type=target_type,
-                subtype=target_subtype,
-                master_password=args.password,
-                connect_timeout=args.timeout,
-                skip_login=True,
-            )
-        else:
-            sys.exit(f"Delete failed: {exc}")
+        sys.exit(f"Delete failed: {exc}\nHint: close the ARGO app before issuing commands.")
     except Exception as exc:
         sys.exit(f"Delete failed: {exc}")
 
@@ -483,10 +501,6 @@ async def cmd_logs(args: argparse.Namespace) -> None:
         subtype=args.subtype,
     )
     print(f"Connecting to {address} …")
-    if args.master:
-        print("\nIMPORTANT: You chose --master mode. Ensure the Master Card is scanned.")
-        input("Press Enter when ready: ")
-
     try:
         entries = await client.read_logs(
             start=args.start,
@@ -536,10 +550,6 @@ async def cmd_users(args: argparse.Namespace) -> None:
         subtype=args.subtype,
     )
     print(f"Connecting to {address} …")
-    if args.master:
-        print("\nIMPORTANT: You chose --master mode. Ensure the Master Card is scanned.")
-        input("Press Enter when ready: ")
-
     try:
         users = await client.read_users(
             connect_timeout=args.timeout,
@@ -562,12 +572,13 @@ async def cmd_users(args: argparse.Namespace) -> None:
             print("No users match the requested type(s).")
             return
 
-    print(f"\n{'#':>4}  {'Type':<12}  {'UUID':<36}  Name")
-    print("-" * 80)
+    print(f"\n{'#':>4}  {'Type':<12}  {'UUID':<36}  {'Status':<10}  Name")
+    print("-" * 90)
     for i, u in enumerate(users, start=1):
         type_label = _USER_TYPE_LABELS.get(u.user_type, f"Type{u.user_type}")
         name = u.name or "(no name)"
-        print(f"{i:>4}  {type_label:<12}  {u.uuid_hex:<36}  {name}")
+        status = "disabled" if u.disabled else "active"
+        print(f"{i:>4}  {type_label:<12}  {u.uuid_hex:<36}  {status:<10}  {name}")
 
     print(f"\n{len(users)} user{'s' if len(users) != 1 else ''} shown.")
 
@@ -719,6 +730,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_reg_pin.add_argument("--password", help="Lock master password")
     p_reg_pin.add_argument("--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)")
 
+    for cmd, help_text in [
+        ("disable-user", "Disable a user (blocks access without deleting)"),
+        ("enable-user", "Re-enable a previously disabled user"),
+    ]:
+        p = sub.add_parser(cmd, help=help_text)
+        p.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
+        p.add_argument("--uuid", required=True, help="Hex UUID of the user")
+        p.add_argument("--user-type", type=int, default=18, help="User type (16=RFID, 17=Bluetooth, 18=PIN)")
+        p.add_argument("--password", help="Lock master password")
+        p.add_argument("--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)")
+
     p_erase = sub.add_parser("erase-identity", help="Remove current identity from lock")
     p_erase.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
     p_erase.add_argument("--password", help="Lock master password")
@@ -768,6 +790,8 @@ def main() -> None:
         "users": cmd_users,
         "register-gateway": cmd_register_gateway,
         "register-pin": cmd_register_pin,
+        "disable-user": cmd_disable_user,
+        "enable-user": cmd_enable_user,
         "erase-identity": cmd_erase_identity,
         "delete-user": cmd_delete_user,
     }

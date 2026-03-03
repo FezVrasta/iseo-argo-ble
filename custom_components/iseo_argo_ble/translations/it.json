@@ -14,15 +14,15 @@
       },
       "gw_register": {
         "title": "Registra Gateway",
-        "description": "Per registrare Home Assistant come Gateway:\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera."
+        "description": "Per registrare Home Assistant come Gateway:\n\n⚠️ **Chiudi l'app ARGO prima di cliccare Conferma.**\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera."
       },
       "gw_register_logs": {
         "title": "Abilita Log Gateway",
-        "description": "Il Gateway ha bisogno di un'ulteriore autorizzazione per ricevere gli aggiornamenti dei log in tempo reale:\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera."
+        "description": "Il Gateway ha bisogno di un'ulteriore autorizzazione per ricevere gli aggiornamenti dei log in tempo reale:\n\n⚠️ **Chiudi l'app ARGO prima di cliccare Conferma.**\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera."
       },
       "gw_fetch_users": {
         "title": "Scarica Lista Utenti",
-        "description": "Per collegare i tuoi utenti Argo agli account Home Assistant, l'integrazione deve scaricare la lista degli utenti dalla serratura.\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera."
+        "description": "Per collegare i tuoi utenti Argo agli account Home Assistant, l'integrazione deve scaricare la lista degli utenti dalla serratura.\n\n⚠️ **Chiudi l'app ARGO prima di cliccare Conferma.**\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera."
       },
       "map_users": {
         "title": "Collega Utenti Argo a Home Assistant",
@@ -73,7 +73,7 @@
       },
       "user_management_refresh": {
         "title": "Aggiorna Lista Utenti",
-        "description": "Per gestire il collegamento degli utenti, Home Assistant deve aggiornare la lista degli utenti dalla serratura.\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera."
+        "description": "Per gestire il collegamento degli utenti, Home Assistant deve aggiornare la lista degli utenti dalla serratura.\n\n⚠️ **Chiudi l'app ARGO prima di cliccare Conferma.**\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera."
       },
       "admin_identity": {
         "title": "Gestione Identità Amministratore",

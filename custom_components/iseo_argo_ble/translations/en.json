@@ -14,15 +14,15 @@
       },
       "gw_register": {
         "title": "Register Gateway",
-        "description": "To register Home Assistant as a Gateway:\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
+        "description": "To register Home Assistant as a Gateway:\n\n⚠️ **Close the ARGO app before clicking Submit.**\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
       },
       "gw_register_logs": {
         "title": "Enable Gateway Logs",
-        "description": "To receive real-time log updates, the Gateway needs one more permission:\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
+        "description": "The Gateway needs one more permission to receive real-time log updates:\n\n⚠️ **Close the ARGO app before clicking Submit.**\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
       },
       "gw_fetch_users": {
         "title": "Fetch User List",
-        "description": "To map your Argo users to Home Assistant accounts, Home Assistant needs to download the lock's whitelist.\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
+        "description": "To map your Argo users to Home Assistant accounts, Home Assistant needs to download the lock's whitelist.\n\n⚠️ **Close the ARGO app before clicking Submit.**\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
       },
       "map_users": {
         "title": "Link Argo Users to Home Assistant",
@@ -73,7 +73,7 @@
       },
       "user_management_refresh": {
         "title": "Refresh User List",
-        "description": "To manage user mappings, Home Assistant needs to refresh the user list from the lock.\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
+        "description": "To manage user mappings, Home Assistant needs to refresh the user list from the lock.\n\n⚠️ **Close the ARGO app before clicking Submit.**\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
       },
       "admin_identity": {
         "title": "Manage Admin Identity",

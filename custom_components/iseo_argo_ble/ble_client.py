@@ -260,6 +260,7 @@ class UserEntry:
     uuid_hex: str  # hex of raw UUID bytes (32 chars for BT = 16-byte UUID)
     name: str  # Tag 2 description; empty string if the user has no name set
     inner_subtype: int | None = None  # Tag 0 inner subtype (e.g. 16=Smartphone, 17=Gateway)
+    disabled: bool = False  # True if tag 16 time profile has an expired validity end
 
 
 @dataclass
@@ -424,7 +425,7 @@ def _tlv_user_bt(
     return _tlv(17, inner)
 
 
-def _bcd_encode_pin(pin: str) -> bytes:
+def bcd_encode_pin(pin: str) -> bytes:
     """
     SbtUserExtraPinBcdCodec format: 7 bytes, BCD, right-aligned, 0xF padded.
     Example "12345" -> FF FF FF FF F1 23 45
@@ -437,10 +438,13 @@ def _bcd_encode_pin(pin: str) -> bytes:
     return bytes(res)
 
 
-def _tlv_user_pin(uuid_bytes: bytes, pin: str, name: str | None = None) -> bytes:
+def _tlv_user_pin(uuid_bytes: bytes, pin: str, name: str | None = None, disabled: bool = False) -> bytes:
     """
     SbtUserDataTlvCodec format for a PIN user (outer tag 18).
     Used by TLV_STORE_USER_BLOCK (opcode 38).
+
+    If disabled=True, a SbtTimeProfile (tag 16) is included with validity disabled
+    (SbtTpValidityRange.DISABLED), which blocks access without deleting the user.
     """
     if len(uuid_bytes) != 7:
         # PIN users in Argo use a shortened 7-byte UUID.
@@ -465,10 +469,21 @@ def _tlv_user_pin(uuid_bytes: bytes, pin: str, name: str | None = None) -> bytes
     now_ts = int(time.time())
     inner += _tlv(4, struct.pack(">I", now_ts))
 
+    if disabled:
+        # Tag 16: SbtTimeProfile — validity enabled but already expired.
+        # The app won't allow end dates before today, so we use start=today_midnight,
+        # end=today_midnight (zero-length range), which is immediately expired.
+        # Lock interprets timestamps in local time, so compute local midnight as a UTC epoch value.
+        now_local = time.localtime()
+        today_local_midnight = int(time.mktime(time.struct_time(
+            (now_local.tm_year, now_local.tm_mon, now_local.tm_mday, 0, 0, 0, 0, 0, -1)
+        )))
+        inner += _tlv(16, bytes([0x01]) + struct.pack(">II", today_local_midnight, today_local_midnight) + bytes(10))
+
     if pin:
         # Tag 18: SbtUserPassword (BCD PIN).
-        # Research in SbtUserDataTlvCodec.java confirms tag 18 is used for the PIN value.
-        inner += _tlv(18, _bcd_encode_pin(pin))
+        inner += _tlv(18, bcd_encode_pin(pin))
+
     return _tlv(18, inner)
 
 
@@ -1184,12 +1199,25 @@ class IseoClient:
                     subtype_raw = inner.get(0, b"")
                     inner_subtype = subtype_raw[0] if subtype_raw else None
 
+                    # Tag 16 is SbtTimeProfile. A user is "disabled" (by our disable command)
+                    # only when validity is enabled, start == end, and both are in the past.
+                    # A regular expired range (start < end) is not treated as disabled.
+                    disabled = False
+                    tp_raw = inner.get(16, b"")
+                    if len(tp_raw) >= 9:
+                        tp_enabled = (tp_raw[0] & 0x01) != 0
+                        tp_start = struct.unpack_from(">I", tp_raw, 1)[0]
+                        tp_end = struct.unpack_from(">I", tp_raw, 5)[0]
+                        now = int(time.time())
+                        disabled = tp_enabled and tp_start == tp_end and tp_end <= now
+
                     entries.append(
                         UserEntry(
                             user_type=outer_tag,
                             uuid_hex=uuid_raw.hex(),
                             name=name_raw.decode("utf-8", errors="replace").rstrip() if name_raw else "",
                             inner_subtype=inner_subtype,
+                            disabled=disabled,
                         )
                     )
 
@@ -1297,12 +1325,15 @@ class IseoClient:
         master_password: str | None = None,
         connect_timeout: float = 20.0,
         skip_login: bool = False,
+        disabled: bool = False,
     ) -> None:
         """
         Connect to the lock and register/update a PIN user (outer tag 18).
 
         If skip_login is False, requires admin rights.
         If skip_login is True, assumes lock is already in Master Mode.
+        If disabled is True, the user is stored with a disabled time profile so
+        access is denied without deleting the user from the lock.
         """
         if not (4 <= len(pin) <= 14 and pin.isdigit()):
             raise ValueError("PIN must be 4-14 digits")
@@ -1334,7 +1365,7 @@ class IseoClient:
                 _LOGGER.debug("Skipping TLV_LOGIN (assume Master Mode/Pre-authorized)")
 
             # 2. Store User (opcode 38)
-            user_tlv = _tlv_user_pin(pin_uuid_bytes, pin, name)
+            user_tlv = _tlv_user_pin(pin_uuid_bytes, pin, name, disabled=disabled)
 
             # Opcode 38 (STORE_USER_BLOCK) expects a raw TLV block (no item count).
             _LOGGER.debug("Sending TLV_STORE_USER_BLOCK (opcode 38) for PIN")
@@ -1358,6 +1389,102 @@ class IseoClient:
         _LOGGER.info(
             "PIN user %s registered successfully on lock %s", pin_uuid_bytes.hex(), self._address
         )
+
+    async def set_user_disabled(
+        self,
+        uuid_hex: str,
+        user_type: int,
+        disabled: bool,
+        connect_timeout: float = 20.0,
+        master_password: str | None = None,
+        skip_login: bool = False,
+    ) -> None:
+        """
+        Enable or disable any enrolled user by patching their time profile (tag 16).
+
+        Reads the raw user TLV from the lock, inserts/removes the disabled time profile
+        (start == end == local midnight today), and writes it back via opcode 38.
+        Works for any user type (PIN, BT, RFID, etc.).
+        """
+        _LOGGER.debug("set_user_disabled(%s, type=%d, disabled=%s)", uuid_hex, user_type, disabled)
+        async with self._connected_client(connect_timeout) as client:
+            await client.start_notify(_S2C_UUID, self._on_notify)
+            await self._handshake(client)
+            try:
+                await self._recv_csl(timeout=2)
+            except asyncio.TimeoutError:
+                pass
+            await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
+            await self._recv_sbt(timeout=10)
+
+            if not skip_login:
+                if master_password:
+                    await self.master_login(client, master_password)
+                else:
+                    login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
+                    await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
+                    await self._recv_sbt(timeout=10)
+
+            # Read all users within the same connection to get raw inner TLV bytes.
+            users_raw: list[tuple[int, bytes]] = []
+            fetch_start = 0
+            while True:
+                req = struct.pack(">HH", fetch_start, 0xFFFF)
+                await self._send_sbt(client, _OP_TLV_READ_USER_BLOCK, req)
+                try:
+                    sbt = await self._recv_sbt(timeout=30)
+                except asyncio.TimeoutError:
+                    break
+                if sbt.get("status", 0) != _SBT_STATUS_OK:
+                    break
+                raw = sbt.get("payload", b"")
+                if len(raw) < 3:
+                    break
+                page_count = raw[0]
+                remaining = struct.unpack_from(">H", raw, 1)[0]
+                for outer_tag, inner_bytes in _parse_tlv_list(raw[3:]):
+                    if outer_tag in range(16, 22):
+                        users_raw.append((outer_tag, inner_bytes))
+                fetch_start += page_count
+                if remaining == 0 or page_count == 0:
+                    break
+
+            match = next(
+                (raw for ut, raw in users_raw if ut == user_type and _parse_tlv(raw).get(1, b"").hex() == uuid_hex),
+                None,
+            )
+            if match is None:
+                raise ValueError(f"User {uuid_hex} (type {user_type}) not found on lock")
+
+            # Rebuild inner TLV in SDK-defined tag order (SbtUserDataTlvCodec.java).
+            _TAG_ORDER = [0, 1, 2, 3, 4, 5, 7, 16, 8, 32, 9, 17, 20, 18, 19, 21, 22, 23]
+            tags = {t: v for t, v in _parse_tlv_list(match)}
+            if disabled:
+                now_local = time.localtime()
+                today_local_midnight = int(time.mktime(time.struct_time(
+                    (now_local.tm_year, now_local.tm_mon, now_local.tm_mday, 0, 0, 0, 0, 0, -1)
+                )))
+                tags[16] = bytes([0x01]) + struct.pack(">II", today_local_midnight, today_local_midnight) + bytes(10)
+            else:
+                # Use SDK SbtTpValidityRange.DISABLED (enabled=false, start=MIN=0, end=MIN=0).
+                # enabled=false means "no time restriction" to the lock firmware.
+                tags[16] = bytes([0x00]) + struct.pack(">II", 0, 0) + bytes(10)
+            tags = [(t, tags[t]) for t in _TAG_ORDER if t in tags]
+
+            inner = b"".join(_tlv(t, v) for t, v in tags)
+            user_tlv = _tlv(user_type, inner)
+
+            await self._send_sbt(client, _OP_TLV_STORE_USER_BLOCK, user_tlv)
+            try:
+                sbt = await self._recv_sbt(timeout=30)
+            except asyncio.TimeoutError as exc:
+                raise IseoConnectionError("No response to set_user_disabled") from exc
+
+            status = sbt.get("status", 0)
+            if status == 5:
+                raise IseoAuthError("Master Mode Required")
+            if status != _SBT_STATUS_OK:
+                raise IseoAuthError(f"set_user_disabled failed with status={status}")
 
     async def gw_read_unread_logs(self, connect_timeout: float = 20.0) -> list[LogEntry]:
         """
