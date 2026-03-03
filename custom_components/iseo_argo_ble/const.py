@@ -6,11 +6,15 @@ DOMAIN = "iseo_argo_ble"
 PLATFORMS = ["lock", "sensor"]
 
 # Config entry keys
-CONF_ADDRESS      = "address"
-CONF_UUID         = "uuid"
-CONF_PRIV_SCALAR  = "priv_scalar"
+CONF_ADDRESS = "address"
+CONF_UUID = "uuid"
+CONF_PRIV_SCALAR = "priv_scalar"
 CONF_USER_SUBTYPE = "user_subtype"
-CONF_USER_MAP     = "user_map"   # ConfigEntry.options key: {uuid_hex: ha_user_id}
+CONF_USER_MAP = "user_map"  # ConfigEntry.options key: {uuid_hex: ha_user_id}
+
+# Optional admin identity (to perform management tasks without Master Card)
+CONF_ADMIN_UUID = "admin_uuid"
+CONF_ADMIN_PRIV_SCALAR = "admin_priv_scalar"
 
 # Default user subtype (smartphone)
 DEFAULT_USER_SUBTYPE = UserSubType.BT_SMARTPHONE

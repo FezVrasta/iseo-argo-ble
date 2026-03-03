@@ -8,6 +8,9 @@ bleak = "*"
 cryptography = "*"
 
 [dev-packages]
+ruff = "*"
+mypy = "*"
+types-cryptography = "*"
 
 [requires]
 python_version = "3.13"

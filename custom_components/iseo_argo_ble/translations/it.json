@@ -30,13 +30,28 @@
         "data": {
           "ignore_all": "Salta questo passaggio e termina la configurazione"
         }
+      },
+      "admin_setup": {
+        "title": "Configura Identità Admin (Opzionale)",
+        "description": "Aggiungere un'identità amministratore permette a Home Assistant di gestire utenti e PIN direttamente.\n\nHome Assistant genererà un UUID unico e una coppia di chiavi crittografiche. Dovrai quindi aggiungere questo UUID nell'app Argo e concedergli i permessi **Admin** e **Login**.",
+        "data": {
+          "setup_admin": "Configura un'identità amministratore"
+        }
+      },
+      "admin_enroll": {
+        "title": "Aggiungi all'app Argo",
+        "description": "Aggiungi il seguente UUID come nuovo utente **Telefono con UID ARGO** nell'app Argo:\n\n1. Apri l'**app Argo**, tocca la tua serratura, poi vai su **Utenti → + → Telefono con UID ARGO**\n2. Inserisci un nome (es. *HA Admin*), copia l'UUID qui sotto e incollalo nell'app, poi tocca **Salva**\n3. Tocca il nuovo utente e abilita i permessi **Login** e **VIP**.\n\n⚠️ **Il prossimo passaggio aprirà la serratura.** Una volta completati i passaggi sopra, clicca **Conferma** per attivare e memorizzare le credenziali.",
+        "data": {
+          "uuid_display": "UUID Argo (Copia questo)"
+        }
       }
     },
     "error": {
       "no_devices_found": "Nessuna serratura ISEO trovata nelle vicinanze. Assicurati che la serratura sia accesa e nel raggio di portata del Bluetooth, quindi clicca Conferma per ripetere la scansione.",
       "auth_failed": "La serratura ha rifiutato la richiesta. Assicurati di aver passato la Master Card mentre i LED lampeggiavano.",
       "cannot_connect": "Impossibile stabilire la connessione con la serratura. Verifica che sia accesa e nel raggio di portata del Bluetooth.",
-      "unknown": "Si è verificato un errore imprevisto. Consulta i log di Home Assistant per maggiori dettagli."
+      "unknown": "Si è verificato un errore imprevisto. Consulta i log di Home Assistant per maggiori dettagli.",
+      "invalid_admin_identity": "L'identità amministratore fornita non è valida."
     },
     "abort": {
       "already_configured": "Questa serratura è già stata configurata.",
@@ -46,13 +61,49 @@
   "options": {
     "step": {
       "init": {
+        "title": "Gestione Serratura",
+        "description": "Scegli cosa vorresti gestire per questa serratura.",
+        "data": {
+          "management_choice": "Voglio..."
+        }
+      },
+      "user_management_refresh": {
         "title": "Aggiorna Lista Utenti",
         "description": "Per gestire il collegamento degli utenti, Home Assistant deve aggiornare la lista degli utenti dalla serratura.\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera."
+      },
+      "admin_identity": {
+        "title": "Gestione Identità Amministratore",
+        "description": "Configura un'identità Argo Admin Phone esistente. Questo permette a Home Assistant di gestire utenti e PIN direttamente senza richiedere la scansione della Master Card per ogni modifica.",
+        "data": {
+          "admin_action": "Azione"
+        }
       },
       "map_users": {
         "title": "Collega Utenti Argo a Home Assistant",
         "description": "Seleziona l'account Home Assistant per ogni utente Argo qui sotto. Lascia un campo vuoto per mantenere anonimi quegli eventi. Trovati {count} utenti.",
         "data": {}
+      },
+      "admin_enroll": {
+        "title": "Aggiungi all'app Argo",
+        "description": "Aggiungi il seguente UUID come nuovo utente **Telefono con UID ARGO** nell'app Argo:\n\n1. Apri l'**app Argo**, tocca la tua serratura, poi vai su **Utenti → + → Telefono con UID ARGO**\n2. Inserisci un nome (es. *HA Admin*), copia l'UUID qui sotto e incollalo nell'app, poi tocca **Salva**\n3. Tocca il nuovo utente e abilita i permessi **Login** e **VIP**.\n\n⚠️ **Il prossimo passaggio aprirà la serratura.** Una volta completati i passaggi sopra, clicca **Conferma** per attivare e memorizzare le credenziali.",
+        "data": {
+          "uuid_display": "UUID Argo (Copia questo)"
+        }
+      }
+    }
+  },
+  "selector": {
+    "management_choice": {
+      "options": {
+        "users": "Gestisci Collegamento Utenti (richiede Master Card)",
+        "admin": "Gestisci Identità Amministratore (collega/scollega telefono)"
+      }
+    },
+    "admin_action": {
+      "options": {
+        "setup": "Configura/Ruota Identità Amministratore",
+        "none": "Mantieni configurazione attuale",
+        "remove": "Rimuovi identità amministratore esistente"
       }
     }
   },

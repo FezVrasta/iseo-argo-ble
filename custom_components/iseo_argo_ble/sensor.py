@@ -10,8 +10,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .ble_client import LogEntry
-from .coordinator import IseoLogCoordinator, _resolve_actor, entry_message, event_name
 from .const import DOMAIN
+from .coordinator import IseoLogCoordinator, _resolve_actor, entry_message, event_name
 
 
 async def async_setup_entry(
@@ -20,10 +20,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: IseoLogCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-    async_add_entities([
-        IseoLastEventSensor(coordinator, entry),
-        IseoBatterySensor(coordinator, entry),
-    ])
+    async_add_entities(
+        [
+            IseoLastEventSensor(coordinator, entry),
+            IseoBatterySensor(coordinator, entry),
+        ]
+    )
 
 
 class IseoLastEventSensor(CoordinatorEntity[IseoLogCoordinator], SensorEntity):
@@ -35,10 +37,9 @@ class IseoLastEventSensor(CoordinatorEntity[IseoLogCoordinator], SensorEntity):
     def __init__(self, coordinator: IseoLogCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._entry = entry
-        self._attr_unique_id = (
-            f"{entry.data['address'].replace(':', '').lower()}_last_event"
-        )
+        self._attr_unique_id = f"{entry.data['address'].replace(':', '').lower()}_last_event"
         from homeassistant.helpers.device_registry import DeviceInfo
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
         )
@@ -56,13 +57,13 @@ class IseoLastEventSensor(CoordinatorEntity[IseoLogCoordinator], SensorEntity):
         if entry is None:
             return {}
         raw_actor = entry.user_info.strip() or entry.extra_description.strip()
-        actor     = _resolve_actor(raw_actor, self.coordinator.user_dir) if raw_actor else None
+        actor = _resolve_actor(raw_actor, self.coordinator.user_dir) if raw_actor else None
         return {
             "event_code": entry.event_code,
             "event_name": event_name(entry.event_code),
-            "actor":      actor or None,
-            "timestamp":  entry.timestamp.isoformat(),
-            "battery":    entry.battery,
+            "actor": actor or None,
+            "timestamp": entry.timestamp.isoformat(),
+            "battery": entry.battery,
         }
 
 
@@ -77,10 +78,9 @@ class IseoBatterySensor(CoordinatorEntity[IseoLogCoordinator], SensorEntity):
 
     def __init__(self, coordinator: IseoLogCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = (
-            f"{entry.data['address'].replace(':', '').lower()}_battery"
-        )
+        self._attr_unique_id = f"{entry.data['address'].replace(':', '').lower()}_battery"
         from homeassistant.helpers.device_registry import DeviceInfo
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
         )

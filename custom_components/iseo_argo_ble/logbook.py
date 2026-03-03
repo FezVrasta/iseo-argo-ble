@@ -14,7 +14,7 @@ def async_describe_events(hass, async_describe_event) -> None:
     def _describe(event) -> dict:
         data = event.data
         return {
-            "name":    "ISEO Lock",
+            "name": "ISEO Lock",
             "message": data.get("message", "access event"),
         }
 

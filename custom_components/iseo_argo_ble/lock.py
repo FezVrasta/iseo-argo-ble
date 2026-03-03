@@ -16,7 +16,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
-from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, LockState, UserSubType
+from .ble_client import IseoAuthError, IseoConnectionError, LockState, UserSubType
 from .const import CONF_ADDRESS, CONF_USER_MAP, CONF_USER_SUBTYPE, CONF_UUID, DEFAULT_USER_SUBTYPE, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -36,8 +36,8 @@ async def async_setup_entry(
 ) -> None:
     # Private key was already derived once in __init__.async_setup_entry.
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-    uuid_bytes  = bytes.fromhex(entry.data[CONF_UUID])
-    subtype     = entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE)
+    uuid_bytes = bytes.fromhex(entry.data[CONF_UUID])
+    subtype = entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE)
 
     async_add_entities(
         [IseoLockEntity(entry, uuid_bytes, coordinator._identity_priv, subtype)],
@@ -49,8 +49,8 @@ class IseoLockEntity(LockEntity):
     """Represents an ISEO X1R BLE door lock."""
 
     _attr_has_entity_name = True
-    _attr_name            = None          # entity name = device name
-    _attr_should_poll     = False
+    _attr_name = None  # entity name = device name
+    _attr_should_poll = False
 
     def __init__(
         self,
@@ -59,14 +59,17 @@ class IseoLockEntity(LockEntity):
         identity_priv: Any,
         user_subtype: int = UserSubType.BT_SMARTPHONE,
     ) -> None:
-        self._entry         = entry
-        self._uuid_bytes    = uuid_bytes
+        self._entry = entry
+        self._uuid_bytes = uuid_bytes
         self._identity_priv = identity_priv
-        self._user_subtype  = user_subtype
-        self._relock_task:  asyncio.Task | None = None
-        self._ble_lock      = asyncio.Lock()
+        self._user_subtype = user_subtype
+        self._relock_task: asyncio.Task | None = None
+        self._ble_lock = asyncio.Lock()
         self._door_status_supported: bool | None = None  # None = not yet probed
         self._fw_version_set = False
+
+        coordinator = self.hass.data[DOMAIN][entry.entry_id]["coordinator"]
+        self.client = coordinator.client
 
         self._attr_unique_id = f"{entry.data[CONF_ADDRESS].replace(':', '').lower()}_lock"
         self._attr_device_info = DeviceInfo(
@@ -77,7 +80,7 @@ class IseoLockEntity(LockEntity):
         )
 
         # Assume locked until we successfully open it.
-        self._attr_is_locked   = True
+        self._attr_is_locked = True
         self._attr_is_unlocking = False
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
@@ -85,9 +88,7 @@ class IseoLockEntity(LockEntity):
         """Probe door-status support; start polling if the lock supports it."""
         await self._poll_state()
         if self._door_status_supported:
-            self.async_on_remove(
-                async_track_time_interval(self.hass, self._poll_state, _POLL_INTERVAL)
-            )
+            self.async_on_remove(async_track_time_interval(self.hass, self._poll_state, _POLL_INTERVAL))
 
     async def _poll_state(self, _now: Any = None) -> None:
         """Read door state via TLV_INFO and update HA state."""
@@ -95,17 +96,13 @@ class IseoLockEntity(LockEntity):
             # Another BLE operation is already in progress; skip this cycle.
             return
 
-        address = self._entry.data[CONF_ADDRESS]
-        client = IseoClient(
-            address       = address,
-            uuid_bytes    = self._uuid_bytes,
-            identity_priv = self._identity_priv,
-            subtype       = self._user_subtype,
-            ble_device    = async_ble_device_from_address(self.hass, address, connectable=True),
-        )
         try:
             async with self._ble_lock:
-                state: LockState = await client.read_state()
+                # Re-read BLE device just in case it moved/changed
+                self.client._ble_device = async_ble_device_from_address(
+                    self.hass, self._entry.data[CONF_ADDRESS], connectable=True
+                )
+                state: LockState = await self.client.read_state()
         except (IseoConnectionError, IseoAuthError) as exc:
             _LOGGER.debug("State poll failed: %s", exc)
             return
@@ -146,22 +143,31 @@ class IseoLockEntity(LockEntity):
 
     # ── State helpers ──────────────────────────────────────────────────────
     def _set_unlocking(self) -> None:
-        self._attr_is_locked    = False
+        self._attr_is_locked = False
         self._attr_is_unlocking = True
         self.async_write_ha_state()
 
     def _set_unlocked(self) -> None:
         self._attr_is_unlocking = False
-        self._attr_is_locked    = False
+        self._attr_is_locked = False
         self.async_write_ha_state()
 
     def _set_locked(self) -> None:
         self._attr_is_unlocking = False
-        self._attr_is_locked    = True
+        self._attr_is_locked = True
         self.async_write_ha_state()
 
     async def _auto_relock(self) -> None:
         """Revert to 'locked' after the motor has re-latched."""
+        # If the lock has a door sensor, we don't force a locked state.
+        # We wait for the sensor to report 'closed' via polling.
+        if self._door_status_supported:
+            _LOGGER.debug("Door status supported; skipping timer-based auto-relock")
+            # Trigger a poll soon to catch the new state
+            await asyncio.sleep(2)
+            await self._poll_state()
+            return
+
         await asyncio.sleep(_RELOCK_DELAY)
         self._set_locked()
 
@@ -173,16 +179,12 @@ class IseoLockEntity(LockEntity):
 
         self._set_unlocking()
 
-        address = self._entry.data[CONF_ADDRESS]
-        client = IseoClient(
-            address       = address,
-            uuid_bytes    = self._uuid_bytes,
-            identity_priv = self._identity_priv,
-            subtype       = self._user_subtype,
-            ble_device    = async_ble_device_from_address(self.hass, address, connectable=True),
-        )
         try:
             async with self._ble_lock:
+                # Re-read BLE device just in case it moved/changed
+                self.client._ble_device = async_ble_device_from_address(
+                    self.hass, self._entry.data[CONF_ADDRESS], connectable=True
+                )
                 if self._user_subtype == UserSubType.BT_GATEWAY:
                     # Use credential-less remote opening.
                     # Try to identify the HA user and map it to an Argo name.
@@ -190,7 +192,7 @@ class IseoLockEntity(LockEntity):
                     if self._context and self._context.user_id:
                         coordinator = self.hass.data[DOMAIN][self._entry.entry_id]["coordinator"]
                         user_map: dict[str, str] = self._entry.options.get(CONF_USER_MAP, {})
-                        
+
                         # Find the Argo UUID mapped to this HA user ID
                         # user_map is {uuid_hex: ha_user_id}
                         argo_uuid = next((u for u, h in user_map.items() if h == self._context.user_id), None)
@@ -198,14 +200,13 @@ class IseoLockEntity(LockEntity):
                             # Resolve the UUID to a friendly name from the lock's whitelist
                             remote_name = coordinator.user_dir.get(argo_uuid.lower(), f"User {argo_uuid[:8]}")
 
-                    await client.gw_open(remote_user_name=remote_name)
+                    await self.client.gw_open(remote_user_name=remote_name)
                 else:
-                    await client.open_lock()
+                    await self.client.open_lock()
         except IseoAuthError as exc:
             self._set_locked()
             raise HomeAssistantError(
-                f"Lock rejected identity: {exc}. "
-                "Ensure the UUID is registered in the Argo app."
+                f"Lock rejected identity: {exc}. Ensure the UUID is registered in the Argo app."
             ) from exc
         except (IseoConnectionError, Exception) as exc:
             self._set_locked()
@@ -219,7 +220,5 @@ class IseoLockEntity(LockEntity):
         Not supported — the ISEO X1R re-latches physically after every open.
         This is a no-op so HA automations calling 'lock' don't throw errors.
         """
-        _LOGGER.debug(
-            "async_lock called on ISEO lock — no-op (lock re-latches automatically)"
-        )
+        _LOGGER.debug("async_lock called on ISEO lock — no-op (lock re-latches automatically)")
         self._set_locked()

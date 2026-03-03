@@ -30,13 +30,28 @@
         "data": {
           "ignore_all": "Skip this step and finish setup"
         }
+      },
+      "admin_setup": {
+        "title": "Configure Admin Identity (Optional)",
+        "description": "Adding an Admin Identity allows Home Assistant to manage users and PINs directly.\n\nHome Assistant will generate a unique UUID and cryptographic keypair. You will then need to add this UUID to the Argo app and grant it **Admin** and **Login** permissions.",
+        "data": {
+          "setup_admin": "Configure an admin identity"
+        }
+      },
+      "admin_enroll": {
+        "title": "Add to Argo App",
+        "description": "Add the following UUID as a new **Phone with ARGO UID** user in the Argo app:\n\n1. Open the **Argo app**, tap your lock, then go to **Users → + → Phone with ARGO UID**\n2. Enter a name (e.g. *HA Admin*), copy the UUID below and paste it in the app, then tap **Save**\n3. Tap the new user and enable **Login** and **VIP** permissions.\n\n⚠️ **The next step will open the lock.** Once you have completed the steps above, click **Submit** to activate and store the credentials.",
+        "data": {
+          "uuid_display": "Argo UUID (Copy this)"
+        }
       }
     },
     "error": {
       "no_devices_found": "No ISEO locks found nearby. Make sure the lock is powered on and within Bluetooth range, then click Submit to scan again.",
       "auth_failed": "The lock rejected the request. Ensure you scanned the Master Card while the LEDs were blinking.",
       "cannot_connect": "Could not connect to the lock. Check it is powered on and within Bluetooth range.",
-      "unknown": "An unexpected error occurred. Check the Home Assistant logs for details."
+      "unknown": "An unexpected error occurred. Check the Home Assistant logs for details.",
+      "invalid_admin_identity": "The provided admin identity is invalid."
     },
     "abort": {
       "already_configured": "This lock is already configured.",
@@ -46,13 +61,49 @@
   "options": {
     "step": {
       "init": {
+        "title": "Lock Management",
+        "description": "Choose what you would like to manage for this lock.",
+        "data": {
+          "management_choice": "I want to..."
+        }
+      },
+      "user_management_refresh": {
         "title": "Refresh User List",
         "description": "To manage user mappings, Home Assistant needs to refresh the user list from the lock.\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
+      },
+      "admin_identity": {
+        "title": "Manage Admin Identity",
+        "description": "Configure an existing Argo Admin Phone identity. This allows Home Assistant to manage users and PINs directly without requiring a Master Card scan for every change.",
+        "data": {
+          "admin_action": "Action"
+        }
       },
       "map_users": {
         "title": "Link Argo Users to Home Assistant",
         "description": "Select the Home Assistant account for each Argo user below. Leave a field blank to keep those events anonymous. {count} user(s) found.",
         "data": {}
+      },
+      "admin_enroll": {
+        "title": "Add to Argo App",
+        "description": "Add the following UUID as a new **Phone with ARGO UID** user in the Argo app:\n\n1. Open the **Argo app**, tap your lock, then go to **Users → + → Phone with ARGO UID**\n2. Enter a name (e.g. *HA Admin*), copy the UUID below and paste it in the app, then tap **Save**\n3. Tap the new user and enable **Login** and **VIP** permissions.\n\n⚠️ **The next step will open the lock.** Once you have completed the steps above, click **Submit** to activate and store the credentials.",
+        "data": {
+          "uuid_display": "Argo UUID (Copy this)"
+        }
+      }
+    }
+  },
+  "selector": {
+    "management_choice": {
+      "options": {
+        "users": "Manage User Mappings (requires Master Card)",
+        "admin": "Manage Admin Identity (link/unlink phone)"
+      }
+    },
+    "admin_action": {
+      "options": {
+        "setup": "Configure/Rotate Admin Identity",
+        "none": "Keep current configuration",
+        "remove": "Remove existing admin identity"
       }
     }
   },

@@ -1,0 +1,31 @@
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "C",   # flake8-comprehensions
+    "B",   # flake8-bugbear
+]
+ignore = [
+    "E501", # line too long (handled by line-length)
+    "B008", # do not perform function calls in argument defaults
+    "C901", # complex-structure
+]
+
+[tool.ruff.isort]
+known-first-party = ["custom_components.iseo_argo_ble"]
+
+[tool.mypy]
+python_version = "3.13"
+show_error_codes = true
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+exclude = [
+    "iseo_reference/.*"
+]
