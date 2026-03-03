@@ -294,7 +294,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
                     name_to_uuid[name]: ha_uid for name, ha_uid in user_input.items() if ha_uid and name in name_to_uuid
                 }
 
-            return await self.async_step_admin_setup()
+            return await self.async_step_admin_choice()
 
         # Fetch HA user accounts
         ha_users = await self.hass.auth.async_get_users()
@@ -317,33 +317,48 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
             data_schema=vol.Schema(fields),
         )
 
-    async def async_step_admin_setup(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Optional: Configure an existing admin phone identity for management."""
+    async def async_step_admin_choice(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Step to choose how to handle administrative tasks."""
         if user_input is not None:
-            if not user_input.get("setup_admin"):
-                return self._async_create_iseo_entry()
-
-            # Generate new identity
-            priv = ec.generate_private_key(ec.SECP224R1(), default_backend())
-            if not isinstance(priv, ec.EllipticCurvePrivateKey):
-                raise TypeError("Expected EllipticCurvePrivateKey")
-            priv_int = priv.private_numbers().private_value  # type: ignore[attr-defined]
-            new_uuid = uuid_module.uuid4().bytes
-
-            self._admin_uuid_hex = new_uuid.hex()
-            self._admin_priv_scalar = hex(priv_int)
-            self._priv = priv  # Temporary store for the enrollment step
-
-            return await self.async_step_admin_enroll()
+            choice = user_input["admin_choice"]
+            if choice == "persistent":
+                return await self.async_step_admin_setup()
+            # If choice is "master" or "none", we just finish setup.
+            # "master" doesn't need any extra configuration data.
+            return self._async_create_iseo_entry()
 
         return self.async_show_form(
-            step_id="admin_setup",
+            step_id="admin_choice",
             data_schema=vol.Schema(
                 {
-                    vol.Required("setup_admin", default=False): bool,
+                    vol.Required("admin_choice", default="persistent"): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                {"value": "persistent", "label": "Setup a persistent Admin identity (Automatic)"},
+                                {"value": "none", "label": "Finish setup (Logs only)"},
+                            ],
+                            mode=SelectSelectorMode.LIST,
+                            translation_key="admin_choice",
+                        )
+                    ),
                 }
             ),
         )
+
+    async def async_step_admin_setup(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Step to trigger Admin Identity generation."""
+        # This step is now strictly for generation and proceeding to enrollment
+        priv = ec.generate_private_key(ec.SECP224R1(), default_backend())
+        if not isinstance(priv, ec.EllipticCurvePrivateKey):
+            raise TypeError("Expected EllipticCurvePrivateKey")
+        priv_int = priv.private_numbers().private_value  # type: ignore[attr-defined]
+        new_uuid = uuid_module.uuid4().bytes
+
+        self._admin_uuid_hex = new_uuid.hex()
+        self._admin_priv_scalar = hex(priv_int)
+        self._priv = priv  # Temporary store for the enrollment step
+
+        return await self.async_step_admin_enroll()
 
     async def async_step_admin_enroll(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Step to show generated UUID and enroll via Open command."""

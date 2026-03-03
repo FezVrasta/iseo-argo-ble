@@ -31,18 +31,22 @@
           "ignore_all": "Salta questo passaggio e termina la configurazione"
         }
       },
-      "admin_setup": {
-        "title": "Configura Identità Admin (Opzionale)",
-        "description": "Aggiungere un'identità amministratore permette a Home Assistant di gestire utenti e PIN direttamente.\n\nHome Assistant genererà un UUID unico e una coppia di chiavi crittografiche. Dovrai quindi aggiungere questo UUID nell'app Argo e concedergli i permessi **Admin** e **Login**.",
+      "admin_choice": {
+        "title": "Accesso Amministrativo",
+        "description": "Scegli come gestire le attività amministrative. **Le funzioni avanzate come la gestione dei codici PIN e l'aggiornamento della lista utenti sono disponibili SOLO se configuri un'identità Admin.**",
         "data": {
-          "setup_admin": "Configura un'identità amministratore"
+          "admin_choice": "Metodo Amministrativo"
         }
+      },
+      "admin_setup": {
+        "title": "Configura Identità Admin",
+        "description": "Home Assistant creerà un'identità sicura per gestire la tua serratura. Dovrai aggiungere questa identità nell'app Argo e abilitare i permessi **VIP** e **Login**."
       },
       "admin_enroll": {
         "title": "Aggiungi all'app Argo",
-        "description": "Aggiungi il seguente UUID come nuovo utente **Telefono con UID ARGO** nell'app Argo:\n\n1. Apri l'**app Argo**, tocca la tua serratura, poi vai su **Utenti → + → Telefono con UID ARGO**\n2. Inserisci un nome (es. *HA Admin*), copia l'UUID qui sotto e incollalo nell'app, poi tocca **Salva**\n3. Tocca il nuovo utente e abilita i permessi **Login** e **VIP**.\n\n⚠️ **Il prossimo passaggio aprirà la serratura.** Una volta completati i passaggi sopra, clicca **Conferma** per attivare e memorizzare le credenziali.",
+        "description": "Aggiungi il seguente **ARGO UID** come nuovo utente **Telefono con UID ARGO** nell'app Argo:\n\n1. Apri l'**app Argo**, tocca la tua serratura, poi vai su **Utenti → + → Telefono con UID ARGO**\n2. Inserisci un nome (es. *HA Admin*), copia l'UID qui sotto e incollalo nell'app, poi tocca **Salva**\n3. Tocca il nuovo utente e abilita i permessi **Login** e **VIP**.\n\n⚠️ **Il prossimo passaggio aprirà la serratura.** Una volta completati i passaggi sopra, clicca **Conferma** per terminare la configurazione.",
         "data": {
-          "uuid_display": "UUID Argo (Copia questo)"
+          "uuid_display": "ARGO UID (Copia questo)"
         }
       }
     },
@@ -85,9 +89,9 @@
       },
       "admin_enroll": {
         "title": "Aggiungi all'app Argo",
-        "description": "Aggiungi il seguente UUID come nuovo utente **Telefono con UID ARGO** nell'app Argo:\n\n1. Apri l'**app Argo**, tocca la tua serratura, poi vai su **Utenti → + → Telefono con UID ARGO**\n2. Inserisci un nome (es. *HA Admin*), copia l'UUID qui sotto e incollalo nell'app, poi tocca **Salva**\n3. Tocca il nuovo utente e abilita i permessi **Login** e **VIP**.\n\n⚠️ **Il prossimo passaggio aprirà la serratura.** Una volta completati i passaggi sopra, clicca **Conferma** per attivare e memorizzare le credenziali.",
+        "description": "Aggiungi il seguente **ARGO UID** come nuovo utente **Telefono con UID ARGO** nell'app Argo:\n\n1. Apri l'**app Argo**, tocca la tua serratura, poi vai su **Utenti → + → Telefono con UID ARGO**\n2. Inserisci un nome (es. *HA Admin*), copia l'UID qui sotto e incollalo nell'app, poi tocca **Salva**\n3. Tocca il nuovo utente e abilita i permessi **Login** e **VIP**.\n\n⚠️ **Il prossimo passaggio aprirà la serratura.** Una volta completati i passaggi sopra, clicca **Conferma** per attivare e memorizzare le credenziali.",
         "data": {
-          "uuid_display": "UUID Argo (Copia questo)"
+          "uuid_display": "ARGO UID (Copia questo)"
         }
       }
     }
@@ -97,6 +101,12 @@
       "options": {
         "users": "Gestisci Collegamento Utenti (richiede Master Card)",
         "admin": "Gestisci Identità Amministratore (collega/scollega telefono)"
+      }
+    },
+    "admin_choice": {
+      "options": {
+        "persistent": "Configura Identità Admin (Abilita tutte le funzioni)",
+        "none": "Disabilita funzioni avanzate (Solo log)"
       }
     },
     "admin_action": {

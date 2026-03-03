@@ -31,18 +31,22 @@
           "ignore_all": "Skip this step and finish setup"
         }
       },
-      "admin_setup": {
-        "title": "Configure Admin Identity (Optional)",
-        "description": "Adding an Admin Identity allows Home Assistant to manage users and PINs directly.\n\nHome Assistant will generate a unique UUID and cryptographic keypair. You will then need to add this UUID to the Argo app and grant it **Admin** and **Login** permissions.",
+      "admin_choice": {
+        "title": "Administrative Access",
+        "description": "Choose how to handle administrative tasks. **Advanced features like managing PIN codes and syncing the user list are ONLY available if you set up an Admin identity.**",
         "data": {
-          "setup_admin": "Configure an admin identity"
+          "admin_choice": "Administrative Method"
         }
+      },
+      "admin_setup": {
+        "title": "Setup Admin Identity",
+        "description": "Home Assistant will create a secure identity to manage your lock. You will need to add this identity to the Argo app and enable the **VIP** and **Login** permissions."
       },
       "admin_enroll": {
         "title": "Add to Argo App",
-        "description": "Add the following UUID as a new **Phone with ARGO UID** user in the Argo app:\n\n1. Open the **Argo app**, tap your lock, then go to **Users → + → Phone with ARGO UID**\n2. Enter a name (e.g. *HA Admin*), copy the UUID below and paste it in the app, then tap **Save**\n3. Tap the new user and enable **Login** and **VIP** permissions.\n\n⚠️ **The next step will open the lock.** Once you have completed the steps above, click **Submit** to activate and store the credentials.",
+        "description": "Add the following **ARGO UID** as a new **Phone with ARGO UID** user in the Argo app:\n\n1. Open the **Argo app**, tap your lock, then go to **Users → + → Phone with ARGO UID**\n2. Enter a name (e.g. *HA Admin*), copy the UID below and paste it in the app, then tap **Save**\n3. Tap the new user and enable **Login** and **VIP** permissions.\n\n⚠️ **The next step will open the lock.** Once you have completed the steps above, click **Submit** to finish setup.",
         "data": {
-          "uuid_display": "Argo UUID (Copy this)"
+          "uuid_display": "ARGO UID (Copy this)"
         }
       }
     },
@@ -85,9 +89,9 @@
       },
       "admin_enroll": {
         "title": "Add to Argo App",
-        "description": "Add the following UUID as a new **Phone with ARGO UID** user in the Argo app:\n\n1. Open the **Argo app**, tap your lock, then go to **Users → + → Phone with ARGO UID**\n2. Enter a name (e.g. *HA Admin*), copy the UUID below and paste it in the app, then tap **Save**\n3. Tap the new user and enable **Login** and **VIP** permissions.\n\n⚠️ **The next step will open the lock.** Once you have completed the steps above, click **Submit** to activate and store the credentials.",
+        "description": "Add the following **ARGO UID** as a new **Phone with ARGO UID** user in the Argo app:\n\n1. Open the **Argo app**, tap your lock, then go to **Users → + → Phone with ARGO UID**\n2. Enter a name (e.g. *HA Admin*), copy the UID below and paste it in the app, then tap **Save**\n3. Tap the new user and enable **Login** and **VIP** permissions.\n\n⚠️ **The next step will open the lock.** Once you have completed the steps above, click **Submit** to activate and store the credentials.",
         "data": {
-          "uuid_display": "Argo UUID (Copy this)"
+          "uuid_display": "ARGO UID (Copy this)"
         }
       }
     }
@@ -97,6 +101,12 @@
       "options": {
         "users": "Manage User Mappings (requires Master Card)",
         "admin": "Manage Admin Identity (link/unlink phone)"
+      }
+    },
+    "admin_choice": {
+      "options": {
+        "persistent": "Setup a persistent Admin identity (Enables all features)",
+        "none": "Disable all advanced features (Logs only)"
       }
     },
     "admin_action": {
