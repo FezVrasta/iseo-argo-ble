@@ -326,7 +326,25 @@ async def cmd_erase_identity(args: argparse.Namespace) -> None:
     )
     print(f"Connecting to {address} to erase identity …")
     try:
-        await client.erase_user(connect_timeout=args.timeout)
+        await client.erase_user(
+            master_password=args.password,
+            connect_timeout=args.timeout,
+            skip_login=args.master,
+        )
+    except IseoAuthError as exc:
+        if "Master Mode Required" in str(exc) and not args.master and not args.password:
+            print("\nError: The lock requires Master Mode for this operation.")
+            print("1. Scan your physical Master Card on the lock (LEDs will blink).")
+            input("2. Press Enter once the card is scanned to retry: ")
+
+            # Retry with skip_login=True (Master Mode)
+            await client.erase_user(
+                master_password=args.password,
+                connect_timeout=args.timeout,
+                skip_login=True,
+            )
+        else:
+            sys.exit(f"Erase failed: {exc}")
     except Exception as exc:
         sys.exit(f"Erase failed: {exc}")
 
@@ -393,17 +411,33 @@ async def cmd_delete_user(args: argparse.Namespace) -> None:
         print("Aborted.")
         return
 
-    print("\nIMPORTANT: To delete a user, the lock must be in Master Mode.")
-    input("1. Press Enter now.\n2. Within 30 seconds, scan your Master Card on the lock: ")
-
     print("Deleting user …")
     try:
         await client.erase_user_by_uuid(
             uuid_bytes=bytes.fromhex(target_uuid_hex),
             user_type=target_type,
             subtype=target_subtype,
+            master_password=args.password,
             connect_timeout=args.timeout,
+            skip_login=args.master,
         )
+    except IseoAuthError as exc:
+        if "Master Mode Required" in str(exc) and not args.master and not args.password:
+            print("\nError: The lock requires Master Mode for this operation.")
+            print("1. Scan your physical Master Card on the lock (LEDs will blink).")
+            input("2. Press Enter once the card is scanned to retry: ")
+
+            # Retry with skip_login=True (Master Mode)
+            await client.erase_user_by_uuid(
+                uuid_bytes=bytes.fromhex(target_uuid_hex),
+                user_type=target_type,
+                subtype=target_subtype,
+                master_password=args.password,
+                connect_timeout=args.timeout,
+                skip_login=True,
+            )
+        else:
+            sys.exit(f"Delete failed: {exc}")
     except Exception as exc:
         sys.exit(f"Delete failed: {exc}")
 
@@ -687,7 +721,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_erase = sub.add_parser("erase-identity", help="Remove current identity from lock")
     p_erase.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
-    p_erase.add_argument("--password", help="Lock master password (optional if Master Card is scanned first)")
+    p_erase.add_argument("--password", help="Lock master password")
+    p_erase.add_argument("--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)")
 
     p_del_user = sub.add_parser("delete-user", help="Remove specific user (interactive if no UUID)")
     p_del_user.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
@@ -704,7 +739,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=UserSubType.BT_SMARTPHONE,
         help="Subtype of the user to delete (16=Phone, 17=Gateway). Only for BT users.",
     )
-    p_del_user.add_argument("--password", help="Lock master password (optional if Master Card is scanned first)")
+    p_del_user.add_argument("--password", help="Lock master password")
+    p_del_user.add_argument("--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)")
 
     return parser
 

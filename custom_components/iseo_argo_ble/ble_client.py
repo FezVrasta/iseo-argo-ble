@@ -451,20 +451,20 @@ def _tlv_user_pin(uuid_bytes: bytes, pin: str, name: str | None = None) -> bytes
     inner = _tlv(1, uuid_bytes)
     if name:
         inner += _tlv(2, name.encode("utf-8"))
-    
+
     # Tag 3: SbtUserOptions. Default value 0x50 enables:
     # Bit 4: Privacy Capability
     # Bit 6: Passage Mode Capability
     inner += _tlv(3, bytes([0x50]))
-    
+
     # Tag 23: SbtUserBtReaderCapabilities. Default 0x02 enables:
     # Bit 1: PIN Capability
     inner += _tlv(23, bytes([0x02]))
-    
+
     # Tag 4: CreationTs (UINT32 BE).
     now_ts = int(time.time())
     inner += _tlv(4, struct.pack(">I", now_ts))
-    
+
     if pin:
         # Tag 18: SbtUserPassword (BCD PIN).
         # Research in SbtUserDataTlvCodec.java confirms tag 18 is used for the PIN value.
@@ -1479,11 +1479,17 @@ class IseoClient:
         self,
         master_password: str | None = None,
         connect_timeout: float = 20.0,
+        skip_login: bool = False,
     ) -> None:
         """Erase ourselves from the whitelist."""
         # Bluetooth users always use user_type 17 (outer tag).
         await self.erase_user_by_uuid(
-            self._uuid_bytes, 17, self._subtype, master_password, connect_timeout
+            self._uuid_bytes,
+            17,
+            self._subtype,
+            master_password,
+            connect_timeout,
+            skip_login=skip_login,
         )
 
     async def erase_user_by_uuid(
@@ -1493,11 +1499,21 @@ class IseoClient:
         subtype: int | None = None,
         master_password: str | None = None,
         connect_timeout: float = 20.0,
+        skip_login: bool = False,
     ) -> None:
         """
-        Connect to the lock, login as Master, and remove a specific user from the whitelist.
+        Connect to the lock and remove a specific user from the whitelist.
+
+        If skip_login is False, requires admin rights.
+        If skip_login is True, assumes lock is already in Master Mode.
         """
-        _LOGGER.debug("Erasing user %s (type=%d) from lock %s", uuid_bytes.hex(), user_type, self._address)
+        _LOGGER.debug(
+            "Erasing user %s (type=%d, skip_login=%s) from lock %s",
+            uuid_bytes.hex(),
+            user_type,
+            skip_login,
+            self._address,
+        )
         async with self._connected_client(connect_timeout) as client:
             await client.start_notify(_S2C_UUID, self._on_notify)
             await self._handshake(client)
@@ -1511,9 +1527,17 @@ class IseoClient:
             await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
             await self._recv_sbt(timeout=10)
 
-            # 1. Master Login
-            if master_password:
-                await self.master_login(client, master_password)
+            if not skip_login:
+                # 1. Master Login (only if password provided)
+                if master_password:
+                    await self.master_login(client, master_password)
+                else:
+                    # Standard admin login
+                    login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
+                    await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
+                    await self._recv_sbt(timeout=10)
+            else:
+                _LOGGER.debug("Skipping TLV_LOGIN (assume Master Mode/Pre-authorized)")
 
             # 2. Erase User (opcode 40)
             if user_type == 17: # BLUETOOTH
