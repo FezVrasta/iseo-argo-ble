@@ -12,7 +12,6 @@ from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Context
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .ble_client import (
@@ -27,9 +26,7 @@ from .const import CONF_ADDRESS, CONF_ADMIN_PRIV_SCALAR, CONF_ADMIN_UUID, CONF_U
 
 _LOGGER = logging.getLogger(__name__)
 
-_STORAGE_VERSION = 1
 _LOG_POLL_INTERVAL = timedelta(minutes=5)
-_MAX_ENTRIES_PER_POLL = 50
 _USER_REFRESH_INTERVAL = timedelta(hours=1)
 # Event codes that mean the user list changed — trigger an immediate user-dir refresh.
 _USER_CHANGE_EVENT_CODES = {15, 16, 17}  # WL_USER_ADDED, WL_USER_DELETED, WL_USER_UPDATED
@@ -117,14 +114,9 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
     Periodically fetches the most recent access-log entries from the lock.
 
     On each poll it:
-    - Connects, authenticates (exchangeInfo + TLV_LOGIN), and reads up to
-      _MAX_ENTRIES_PER_POLL entries (newest-first).
-    - Fires an ``iseo_argo_ble_event`` into the HA event bus for every entry
-      that is newer than the last-seen timestamp.
+    - Connects as Gateway and reads unread log entries (opcode 66).
+    - Fires an ``iseo_argo_ble_event`` into the HA event bus for every new entry.
     - Returns the most-recent ``LogEntry`` as coordinator data for sensors.
-
-    The last-seen timestamp is persisted in HA storage so events are not
-    re-fired after a restart.
     """
 
     def __init__(
@@ -145,9 +137,6 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
         self._uuid_bytes = uuid_bytes
         self._identity_priv = identity_priv
         self._user_subtype = user_subtype
-        self._store = Store(hass, _STORAGE_VERSION, f"{DOMAIN}_{entry.entry_id}_log")
-        self._last_ts: datetime | None = None
-        self._baseline_set: bool = False
         # uuid_hex (lower-case, 32 chars) → display name; populated by _refresh_user_dir()
         self._user_dir: dict[str, str] = {}
         self._user_dir_ts: datetime | None = None
@@ -206,25 +195,13 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
             len(users),
         )
 
-    async def async_setup(self) -> None:
-        """Load persisted state (call once after creating the coordinator)."""
-        stored = await self._store.async_load()
-        if stored:
-            ts_str = stored.get("last_ts")
-            if ts_str:
-                self._last_ts = datetime.fromisoformat(ts_str)
-            self._baseline_set = bool(stored.get("baseline_set", False))
-
     async def _async_update_data(self) -> "LogEntry | None":
         try:
             # Re-read BLE device just in case it moved/changed
             self.client._ble_device = async_ble_device_from_address(
                 self.hass, self._entry.data[CONF_ADDRESS], connectable=True
             )
-            if self._user_subtype == UserSubType.BT_GATEWAY:
-                entries = await self.client.gw_read_unread_logs(connect_timeout=20.0)
-            else:
-                entries = await self.client.read_logs(start=0, max_entries=_MAX_ENTRIES_PER_POLL)
+            entries = await self.client.gw_read_unread_logs(connect_timeout=20.0)
         except (IseoConnectionError, IseoAuthError) as exc:
             raise UpdateFailed(f"Log fetch failed: {exc}") from exc
 
@@ -235,66 +212,38 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
         if not entries:
             return self.data  # keep last known value
 
-        # entries[0] is the most recent (lock returns newest-first)
-        most_recent = entries[0]
+        # Refresh user directory if stale or if the whitelist changed.
+        now = datetime.now(tz=timezone.utc)
+        if (
+            self._user_dir_ts is None
+            or (now - self._user_dir_ts) >= _USER_REFRESH_INTERVAL
+            or any(e.event_code in _USER_CHANGE_EVENT_CODES for e in entries)
+        ):
+            await self._refresh_user_dir()
 
-        if not self._baseline_set:
-            # First ever run: record the current state as baseline without
-            # firing events, so we don't flood the logbook with old history.
-            self._baseline_set = True
-            self._last_ts = most_recent.timestamp
-            await self._store.async_save(
+        entity_id = self._lock_entity_id()
+        user_map: dict[str, str] = self._entry.options.get(CONF_USER_MAP, {})
+        for e in entries:  # gw_read_unread_logs returns oldest-first
+            raw_actor = e.user_info.strip() or e.extra_description.strip()
+            actor = _resolve_actor(raw_actor, self._user_dir) if raw_actor else ""
+            uuid_key = raw_actor.lower() if len(raw_actor) == 32 else None
+            ha_user_id = user_map.get(uuid_key) if uuid_key else None
+            event_ctx = Context(user_id=ha_user_id) if ha_user_id else None
+            self.hass.bus.async_fire(
+                EVENT_TYPE,
                 {
-                    "last_ts": most_recent.timestamp.isoformat(),
-                    "baseline_set": True,
-                }
-            )
-            return most_recent
-
-        # Find entries newer than the last-seen timestamp.
-        new = [e for e in entries if self._last_ts is None or e.timestamp > self._last_ts]
-
-        if new:
-            # Refresh user directory if stale or if the whitelist changed.
-            now = datetime.now(tz=timezone.utc)
-            if (
-                self._user_dir_ts is None
-                or (now - self._user_dir_ts) >= _USER_REFRESH_INTERVAL
-                or any(e.event_code in _USER_CHANGE_EVENT_CODES for e in new)
-            ):
-                await self._refresh_user_dir()
-
-            entity_id = self._lock_entity_id()
-            user_map: dict[str, str] = self._entry.options.get(CONF_USER_MAP, {})
-            for e in reversed(new):  # fire in chronological order (oldest first)
-                raw_actor = e.user_info.strip() or e.extra_description.strip()
-                actor = _resolve_actor(raw_actor, self._user_dir) if raw_actor else ""
-                # Map UUID → HA user ID for event context attribution.
-                uuid_key = raw_actor.lower() if len(raw_actor) == 32 else None
-                ha_user_id = user_map.get(uuid_key) if uuid_key else None
-                event_ctx = Context(user_id=ha_user_id) if ha_user_id else None
-                self.hass.bus.async_fire(
-                    EVENT_TYPE,
-                    {
-                        "entity_id": entity_id,
-                        "event_code": e.event_code,
-                        "name": event_name(e.event_code),
-                        "message": entry_message(e, self._user_dir),
-                        "actor": actor,
-                        "timestamp": e.timestamp.isoformat(),
-                        "battery": e.battery,
-                    },
-                    context=event_ctx,
-                )
-            self._last_ts = most_recent.timestamp
-            await self._store.async_save(
-                {
-                    "last_ts": most_recent.timestamp.isoformat(),
-                    "baseline_set": True,
-                }
+                    "entity_id": entity_id,
+                    "event_code": e.event_code,
+                    "name": event_name(e.event_code),
+                    "message": entry_message(e, self._user_dir),
+                    "actor": actor,
+                    "timestamp": e.timestamp.isoformat(),
+                    "battery": e.battery,
+                },
+                context=event_ctx,
             )
 
-        return most_recent
+        return entries[-1]  # most recent is last (oldest-first order)
 
     def make_admin_client(self) -> IseoClient | None:
         """Return an IseoClient using the admin identity, or None if not configured.

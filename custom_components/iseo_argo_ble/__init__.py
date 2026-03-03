@@ -135,7 +135,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     subtype = entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE)
 
     coordinator = IseoLogCoordinator(hass, entry, uuid_bytes, priv, subtype)
-    await coordinator.async_setup()  # load persisted last-seen timestamp
     await coordinator.async_config_entry_first_refresh()  # initial poll
 
     hass.data[DOMAIN][entry.entry_id] = {"coordinator": coordinator}
