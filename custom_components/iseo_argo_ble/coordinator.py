@@ -6,6 +6,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, derive_private_key
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Context
@@ -21,7 +23,7 @@ from .ble_client import (
     UserEntry,
     UserSubType,
 )
-from .const import CONF_ADDRESS, CONF_USER_MAP, DOMAIN, EVENT_TYPE
+from .const import CONF_ADDRESS, CONF_ADMIN_PRIV_SCALAR, CONF_ADMIN_UUID, CONF_USER_MAP, DOMAIN, EVENT_TYPE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -174,11 +176,19 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
     async def _refresh_user_dir(self) -> None:
         """Fetch the whitelist from the lock and rebuild the name directory."""
         try:
-            # Re-read BLE device just in case it moved/changed
-            self.client._ble_device = async_ble_device_from_address(
-                self.hass, self._entry.data[CONF_ADDRESS], connectable=True
-            )
-            users: list[UserEntry] = await self.client.read_users(skip_login=True)
+            # Prefer the admin client (proper BT login with admin rights).
+            # Fall back to the gateway client with skip_login=True (Master Mode only).
+            admin_client = await self.hass.async_add_executor_job(self.make_admin_client)
+            if admin_client is not None:
+                fetch_client = admin_client
+                skip = False
+            else:
+                self.client._ble_device = async_ble_device_from_address(
+                    self.hass, self._entry.data[CONF_ADDRESS], connectable=True
+                )
+                fetch_client = self.client
+                skip = True
+            users: list[UserEntry] = await fetch_client.read_users(skip_login=skip)
         except (IseoConnectionError, IseoAuthError) as exc:
             _LOGGER.debug("User directory refresh failed: %s", exc)
             return
@@ -217,6 +227,10 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
                 entries = await self.client.read_logs(start=0, max_entries=_MAX_ENTRIES_PER_POLL)
         except (IseoConnectionError, IseoAuthError) as exc:
             raise UpdateFailed(f"Log fetch failed: {exc}") from exc
+
+        # Ensure user list is populated on first load, regardless of log activity.
+        if not self._users:
+            await self._refresh_user_dir()
 
         if not entries:
             return self.data  # keep last known value
@@ -281,6 +295,26 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
             )
 
         return most_recent
+
+    def make_admin_client(self) -> IseoClient | None:
+        """Return an IseoClient using the admin identity, or None if not configured.
+
+        CPU-bound due to derive_private_key; callers must run in executor.
+        """
+        admin_uuid = self._entry.data.get(CONF_ADMIN_UUID)
+        admin_scalar = self._entry.data.get(CONF_ADMIN_PRIV_SCALAR)
+        if not admin_uuid or not admin_scalar:
+            return None
+        priv = derive_private_key(int(admin_scalar, 16), SECP224R1(), default_backend())
+        return IseoClient(
+            address=self._entry.data[CONF_ADDRESS],
+            uuid_bytes=bytes.fromhex(admin_uuid),
+            identity_priv=priv,
+            subtype=UserSubType.BT_SMARTPHONE,
+            ble_device=async_ble_device_from_address(
+                self.hass, self._entry.data[CONF_ADDRESS], connectable=True
+            ),
+        )
 
     def _lock_entity_id(self) -> str | None:
         """Look up the lock entity_id from the entity registry."""

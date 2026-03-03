@@ -99,8 +99,8 @@
   "selector": {
     "management_choice": {
       "options": {
-        "users": "Gestisci Collegamento Utenti (richiede Master Card)",
-        "admin": "Gestisci Identità Amministratore (collega/scollega telefono)"
+        "users": "Gestisci Collegamento Utenti",
+        "admin": "Gestisci Identità Amministratore (collega/scollega utente amministratore)"
       }
     },
     "admin_choice": {

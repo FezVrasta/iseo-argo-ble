@@ -99,8 +99,8 @@
   "selector": {
     "management_choice": {
       "options": {
-        "users": "Manage User Mappings (requires Master Card)",
-        "admin": "Manage Admin Identity (link/unlink phone)"
+        "users": "Manage User Mappings",
+        "admin": "Manage Admin Identity (link/unlink admin user)"
       }
     },
     "admin_choice": {

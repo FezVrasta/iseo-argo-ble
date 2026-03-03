@@ -3,7 +3,7 @@
 from .ble_client import UserSubType
 
 DOMAIN = "iseo_argo_ble"
-PLATFORMS = ["lock", "sensor"]
+PLATFORMS = ["lock", "sensor", "switch"]
 
 # Config entry keys
 CONF_ADDRESS = "address"

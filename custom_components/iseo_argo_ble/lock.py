@@ -40,7 +40,7 @@ async def async_setup_entry(
     subtype = entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE)
 
     async_add_entities(
-        [IseoLockEntity(entry, uuid_bytes, coordinator._identity_priv, subtype)],
+        [IseoLockEntity(entry, uuid_bytes, coordinator._identity_priv, subtype, coordinator.client)],
         update_before_add=False,
     )
 
@@ -58,6 +58,7 @@ class IseoLockEntity(LockEntity):
         uuid_bytes: bytes,
         identity_priv: Any,
         user_subtype: int = UserSubType.BT_SMARTPHONE,
+        client: Any = None,
     ) -> None:
         self._entry = entry
         self._uuid_bytes = uuid_bytes
@@ -68,8 +69,7 @@ class IseoLockEntity(LockEntity):
         self._door_status_supported: bool | None = None  # None = not yet probed
         self._fw_version_set = False
 
-        coordinator = self.hass.data[DOMAIN][entry.entry_id]["coordinator"]
-        self.client = coordinator.client
+        self.client = client
 
         self._attr_unique_id = f"{entry.data[CONF_ADDRESS].replace(':', '').lower()}_lock"
         self._attr_device_info = DeviceInfo(
