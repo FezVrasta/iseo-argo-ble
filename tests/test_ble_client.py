@@ -1,6 +1,6 @@
 import sys
 import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../custom_components/iseo_argo_ble")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import asyncio
 import pytest
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.backends import default_backend
 
-from ble_client import (
+from iseo_argo_ble.client import (
     IseoClient,
     LockState,
     _OP_TLV_INFO,

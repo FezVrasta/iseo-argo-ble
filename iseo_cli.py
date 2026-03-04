@@ -45,17 +45,28 @@ import uuid as uuid_module
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-# ble_client.py lives inside the component folder and has no HA dependencies.
-sys.path.insert(0, str(Path(__file__).resolve().parent / "custom_components" / "iseo_argo_ble"))
-from ble_client import (
-    IseoAuthError,
-    IseoClient,
-    IseoConnectionError,
-    MasterAuthError,
-    UserSubType,
-    bcd_encode_pin,
-    is_iseo_advertisement,
-)  # noqa: E402
+try:
+    from iseo_argo_ble import (
+        IseoAuthError,
+        IseoClient,
+        IseoConnectionError,
+        MasterAuthError,
+        UserSubType,
+        is_iseo_advertisement,
+    )
+    from iseo_argo_ble.client import bcd_encode_pin
+except ImportError:
+    # ble_client.py lives inside the component folder and has no HA dependencies.
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "custom_components" / "iseo_argo_ble"))
+    from ble_client import (
+        IseoAuthError,
+        IseoClient,
+        IseoConnectionError,
+        MasterAuthError,
+        UserSubType,
+        bcd_encode_pin,
+        is_iseo_advertisement,
+    )  # noqa: E402
 
 if TYPE_CHECKING:
     pass

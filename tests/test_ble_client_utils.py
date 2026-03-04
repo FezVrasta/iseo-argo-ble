@@ -1,11 +1,11 @@
 import sys
 import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../custom_components/iseo_argo_ble")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import pytest
 import struct
 from datetime import datetime, timezone
-from ble_client import (
+from iseo_argo_ble.client import (
     is_iseo_advertisement,
     _slip_encode,
     _slip_decode,
@@ -143,7 +143,7 @@ def test_parse_sbt_lock_resp():
     assert parsed["payload"] == payload
 
 def test_tlv_user_bt():
-    from ble_client import _tlv_user_bt, UserSubType
+    from iseo_argo_ble.client import _tlv_user_bt, UserSubType
     uuid = b"U" * 16
     pub = b"K" * 56
     tlv_data = _tlv_user_bt(uuid, pub, UserSubType.BT_GATEWAY)
@@ -154,7 +154,7 @@ def test_tlv_user_bt():
     assert parsed[32] == pub
 
 def test_tlv_user_pin():
-    from ble_client import _tlv_user_pin
+    from iseo_argo_ble.client import _tlv_user_pin
     uuid = b"P" * 16
     pin = "1234"
     tlv_data = _tlv_user_pin(uuid, pin, name="Test")

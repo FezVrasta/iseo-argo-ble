@@ -1,3 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "iseo-argo-ble"
+version = "0.4.0"
+description = "ISEO Argo BLE Lock protocol library"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    { name = "Federico Zivolo", email = "federico.zivolo@gmail.com" },
+]
+dependencies = [
+    "bleak>=0.21.0",
+    "cryptography>=41.0.0",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/FezVrasta/iseo-argo-ble"
+Repository = "https://github.com/FezVrasta/iseo-argo-ble"
+
+[tool.hatch.build.targets.wheel]
+packages = ["iseo_argo_ble"]
+
 [tool.ruff]
 target-version = "py313"
 line-length = 120
@@ -16,7 +51,7 @@ ignore = [
 ]
 
 [tool.ruff.isort]
-known-first-party = ["custom_components.iseo_argo_ble"]
+known-first-party = ["iseo_argo_ble", "custom_components.iseo_argo_ble"]
 
 [tool.mypy]
 python_version = "3.13"
