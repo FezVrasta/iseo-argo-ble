@@ -1,9 +1,9 @@
 {
   "domain": "iseo_argo_ble",
   "name": "ISEO Argo BLE Lock",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "documentation": "https://github.com/FezVrasta/iseo-argo-ble",
-  "requirements": ["iseo-argo-ble==0.5.0", "bleak>=0.21.0", "bleak-retry-connector>=3.0.0"],
+  "requirements": ["iseo-argo-ble==0.5.1", "bleak>=0.21.0", "bleak-retry-connector>=3.0.0"],
   "dependencies": ["bluetooth"],
   "bluetooth": [
     {"service_uuid": "0000f000-0000-1000-8000-00805f9b34fb"},
