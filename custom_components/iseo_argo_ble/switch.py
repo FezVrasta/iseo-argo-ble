@@ -18,7 +18,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .ble_client import (
+from iseo_argo_ble import (
     IseoAuthError,
     IseoConnectionError,
     USER_TYPE_RFID,

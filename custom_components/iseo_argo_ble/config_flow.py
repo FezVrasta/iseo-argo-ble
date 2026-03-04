@@ -23,7 +23,7 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
 )
 
-from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, UserSubType, _pub_to_bytes, is_iseo_advertisement
+from iseo_argo_ble import IseoAuthError, IseoClient, IseoConnectionError, UserSubType, is_iseo_advertisement
 from .const import (
     CONF_ADDRESS,
     CONF_ADMIN_PRIV_SCALAR,

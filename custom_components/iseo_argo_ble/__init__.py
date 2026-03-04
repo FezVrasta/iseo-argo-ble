@@ -15,7 +15,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.typing import ConfigType
 
-from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, UserSubType
+from iseo_argo_ble import IseoAuthError, IseoClient, IseoConnectionError, UserSubType
 from .const import (
     CONF_ADDRESS,
     CONF_PRIV_SCALAR,

@@ -2,7 +2,7 @@
 
 from homeassistant.const import Platform
 
-from .ble_client import UserSubType
+from iseo_argo_ble import UserSubType
 
 DOMAIN = "iseo_argo_ble"
 PLATFORMS = [Platform.LOCK, Platform.SENSOR, Platform.SWITCH]

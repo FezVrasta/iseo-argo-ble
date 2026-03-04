@@ -10,7 +10,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .ble_client import LogEntry, battery_enum_to_pct
+from iseo_argo_ble import LogEntry, battery_enum_to_pct
 from .const import CONF_ADDRESS, DOMAIN
 from .coordinator import IseoLogCoordinator, _resolve_actor, entry_message, event_name
 

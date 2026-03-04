@@ -16,7 +16,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
-from .ble_client import IseoAuthError, IseoConnectionError, LockState, UserSubType
+from iseo_argo_ble import IseoAuthError, IseoConnectionError, LockState, UserSubType
 from .const import CONF_ADDRESS, CONF_USER_MAP, CONF_USER_SUBTYPE, CONF_UUID, DEFAULT_USER_SUBTYPE, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
