@@ -1,9 +1,11 @@
 """Constants for the ISEO Argo BLE Lock integration."""
 
+from homeassistant.const import Platform
+
 from .ble_client import UserSubType
 
 DOMAIN = "iseo_argo_ble"
-PLATFORMS = ["lock", "sensor", "switch"]
+PLATFORMS = [Platform.LOCK, Platform.SENSOR, Platform.SWITCH]
 
 # Config entry keys
 CONF_ADDRESS = "address"
@@ -12,7 +14,9 @@ CONF_PRIV_SCALAR = "priv_scalar"
 CONF_USER_SUBTYPE = "user_subtype"
 CONF_USER_MAP = "user_map"  # ConfigEntry.options key: {uuid_hex: ha_user_id}
 
-# Optional admin identity (to perform management tasks without Master Card)
+# Optional admin identity — a second BT user enrolled with BT_SMARTPHONE subtype
+# that can perform whitelist management (add/remove/disable users) without a
+# physical Master Card tap.  Both keys must be present together or not at all.
 CONF_ADMIN_UUID = "admin_uuid"
 CONF_ADMIN_PRIV_SCALAR = "admin_priv_scalar"
 
@@ -20,4 +24,6 @@ CONF_ADMIN_PRIV_SCALAR = "admin_priv_scalar"
 DEFAULT_USER_SUBTYPE = UserSubType.BT_SMARTPHONE
 
 # Event fired into the HA bus for every new access-log entry.
-EVENT_TYPE = f"{DOMAIN}_event"
+# Defined as a literal (not derived from DOMAIN) so user automations referencing
+# this event type are not silently broken if the domain is ever renamed.
+EVENT_TYPE = "iseo_argo_ble_event"

@@ -15,7 +15,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.typing import ConfigType
 
-from .ble_client import IseoClient, UserSubType
+from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, UserSubType
 from .const import (
     CONF_ADDRESS,
     CONF_PRIV_SCALAR,
@@ -33,19 +33,17 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the ISEO Argo BLE Lock component."""
 
-    async def handle_read_users(call: ServiceCall):
-        """Fetch the complete list of registered users from the lock."""
-        if not (entries := hass.config_entries.async_entries(DOMAIN)):
-            raise vol.Invalid("No ISEO locks configured.")
+    async def _client_for_entry(config_entry_id: str) -> IseoClient:
+        """Resolve a config entry by ID and return a ready IseoClient."""
+        entry = hass.config_entries.async_get_entry(config_entry_id)
+        if entry is None or entry.domain != DOMAIN:
+            raise vol.Invalid(f"Config entry {config_entry_id!r} not found.")
+        entry_data = hass.data.get(DOMAIN, {}).get(config_entry_id)
+        if entry_data is None:
+            raise vol.Invalid(f"ISEO lock {config_entry_id!r} is not loaded.")
 
-        entry = entries[0]
-        if entry.entry_id not in hass.data.get(DOMAIN, {}):
-            raise vol.Invalid("ISEO lock not loaded.")
-
-        priv_int = int(entry.data[CONF_PRIV_SCALAR], 16)
-        priv = await hass.async_add_executor_job(derive_private_key, priv_int, SECP224R1(), default_backend())
-
-        client = IseoClient(
+        priv = entry_data["priv"]
+        return IseoClient(
             address=entry.data[CONF_ADDRESS],
             uuid_bytes=bytes.fromhex(entry.data[CONF_UUID]),
             identity_priv=priv,
@@ -53,6 +51,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             ble_device=async_ble_device_from_address(hass, entry.data[CONF_ADDRESS], connectable=True),
         )
 
+    async def handle_read_users(call: ServiceCall):
+        """Fetch the complete list of registered users from the lock."""
+        client = await _client_for_entry(call.data["config_entry_id"])
         users = await client.read_users()
         return {
             "users": [
@@ -69,26 +70,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def handle_delete_user(call: ServiceCall):
         """Remove a user from the lock's whitelist."""
         target_uuid_hex = call.data["uuid"]
+        client = await _client_for_entry(call.data["config_entry_id"])
 
-        if not (entries := hass.config_entries.async_entries(DOMAIN)):
-            raise vol.Invalid("No ISEO locks configured.")
-
-        entry = entries[0]
-        if entry.entry_id not in hass.data.get(DOMAIN, {}):
-            raise vol.Invalid("ISEO lock not loaded.")
-
-        priv_int = int(entry.data[CONF_PRIV_SCALAR], 16)
-        priv = await hass.async_add_executor_job(derive_private_key, priv_int, SECP224R1(), default_backend())
-
-        client = IseoClient(
-            address=entry.data[CONF_ADDRESS],
-            uuid_bytes=bytes.fromhex(entry.data[CONF_UUID]),
-            identity_priv=priv,
-            subtype=entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE),
-            ble_device=async_ble_device_from_address(hass, entry.data[CONF_ADDRESS], connectable=True),
-        )
-
-        # Step 1: Fetch users to find the correct subtype
+        # Step 1: Fetch users to find the correct type and subtype
         users = await client.read_users()
         target_user = next((u for u in users if u.uuid_hex.lower() == target_uuid_hex.lower()), None)
 
@@ -97,17 +81,20 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
         subtype = target_user.inner_subtype or UserSubType.BT_SMARTPHONE
 
-        # Step 2: Delete (user_type 17 = Bluetooth)
+        # Step 2: Delete using the actual user type read from the lock
         await client.erase_user_by_uuid(
             uuid_bytes=bytes.fromhex(target_uuid_hex),
-            user_type=17,
-            subtype=subtype
+            user_type=target_user.user_type,
+            subtype=subtype,
         )
+
+    _ENTRY_ID_SCHEMA = {vol.Required("config_entry_id"): cv.string}
 
     hass.services.async_register(
         DOMAIN,
         "read_users",
         handle_read_users,
+        schema=vol.Schema(_ENTRY_ID_SCHEMA),
         supports_response=entity_platform.SupportsResponse.ONLY,
     )
     hass.services.async_register(
@@ -116,6 +103,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         handle_delete_user,
         schema=vol.Schema(
             {
+                **_ENTRY_ID_SCHEMA,
                 vol.Required("uuid"): cv.string,
             }
         ),
@@ -137,7 +125,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = IseoLogCoordinator(hass, entry, uuid_bytes, priv, subtype)
     await coordinator.async_config_entry_first_refresh()  # initial poll
 
-    hass.data[DOMAIN][entry.entry_id] = {"coordinator": coordinator}
+    hass.data[DOMAIN][entry.entry_id] = {"coordinator": coordinator, "priv": priv}
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -147,8 +135,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry. Best-effort unregister from lock if it's a Gateway."""
     # 1. Attempt best-effort cleanup on the physical lock
     try:
-        priv_int = int(entry.data[CONF_PRIV_SCALAR], 16)
-        priv = await hass.async_add_executor_job(derive_private_key, priv_int, SECP224R1(), default_backend())
+        priv = hass.data[DOMAIN][entry.entry_id]["priv"]
         address = entry.data[CONF_ADDRESS]
         uuid_bytes = bytes.fromhex(entry.data[CONF_UUID])
         subtype = entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE)
@@ -165,7 +152,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug("Best-effort unregistering gateway from lock %s", address)
             async with asyncio.timeout(35):
                 await client.erase_user()
-    except Exception as exc:
+    except (IseoConnectionError, IseoAuthError, asyncio.TimeoutError) as exc:
         _LOGGER.debug("Best-effort lock cleanup failed (ignoring): %s", exc)
 
     # 2. Unload platforms and data

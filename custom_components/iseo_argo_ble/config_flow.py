@@ -23,7 +23,7 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
 )
 
-from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, UserSubType, is_iseo_advertisement
+from .ble_client import IseoAuthError, IseoClient, IseoConnectionError, UserSubType, _pub_to_bytes, is_iseo_advertisement
 from .const import (
     CONF_ADDRESS,
     CONF_ADMIN_PRIV_SCALAR,
@@ -39,11 +39,12 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-def _pub_to_bytes(priv: Any) -> bytes:
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-
-    raw = priv.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
-    return raw[1:]  # 56-byte X||Y
+def _generate_identity() -> ec.EllipticCurvePrivateKey:
+    """Generate a fresh SECP224R1 private key for use as an Argo BT identity."""
+    priv = ec.generate_private_key(ec.SECP224R1(), default_backend())
+    if not isinstance(priv, ec.EllipticCurvePrivateKey):
+        raise TypeError("Expected EllipticCurvePrivateKey")
+    return priv
 
 
 def _discover_locks(hass: HomeAssistant) -> list[BluetoothServiceInfoBleak]:
@@ -80,7 +81,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
     @staticmethod
     @config_entries.callback
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> "IseoOptionsFlow":
-        return IseoOptionsFlow(config_entry)
+        return IseoOptionsFlow()
 
     def __init__(self) -> None:
         self._discovered: dict[str, BluetoothServiceInfoBleak] = {}
@@ -88,7 +89,8 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
         self._device_name: str = ""
         self._uuid_hex: str = ""
         self._priv_scalar: str = ""
-        self._priv: Any = None
+        self._gw_priv: Any = None
+        self._admin_priv: Any = None
         self._user_subtype: int = DEFAULT_USER_SUBTYPE
         self._bt_users: list = []
         self._user_map: dict = {}
@@ -107,9 +109,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
             # re-enrolling (e.g. after a lock factory reset).
             await self.async_set_unique_id(address.replace(":", ""))
 
-            priv = ec.generate_private_key(ec.SECP224R1(), default_backend())
-            if not isinstance(priv, ec.EllipticCurvePrivateKey):
-                raise TypeError("Expected EllipticCurvePrivateKey")
+            priv = _generate_identity()
             priv_int = priv.private_numbers().private_value  # type: ignore[attr-defined]
             new_uuid = uuid_module.uuid4().bytes
 
@@ -117,7 +117,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
             self._device_name = self._discovered[address].name if address in self._discovered else ""
             self._uuid_hex = new_uuid.hex()
             self._priv_scalar = hex(priv_int)
-            self._priv = priv
+            self._gw_priv = priv
             self._user_subtype = UserSubType.BT_GATEWAY
 
             return await self.async_step_gw_register()
@@ -174,9 +174,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
         if not is_iseo_advertisement(list(discovery_info.service_uuids or [])):
             return self.async_abort(reason="not_iseo_device")
 
-        priv = ec.generate_private_key(ec.SECP224R1(), default_backend())
-        if not isinstance(priv, ec.EllipticCurvePrivateKey):
-            raise TypeError("Expected EllipticCurvePrivateKey")
+        priv = _generate_identity()
         priv_int = priv.private_numbers().private_value  # type: ignore[attr-defined]
         new_uuid = uuid_module.uuid4().bytes
 
@@ -184,7 +182,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
         self._device_name = discovery_info.name or discovery_info.address
         self._uuid_hex = new_uuid.hex()
         self._priv_scalar = hex(priv_int)
-        self._priv = priv
+        self._gw_priv = priv
         self._user_subtype = UserSubType.BT_GATEWAY
 
         self.context["title_placeholders"] = {"name": self._device_name}
@@ -208,7 +206,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
             client = IseoClient(
                 address=self._address,
                 uuid_bytes=bytes.fromhex(self._uuid_hex),
-                identity_priv=self._priv,
+                identity_priv=self._gw_priv,
                 subtype=self._user_subtype,
                 ble_device=async_ble_device_from_address(self.hass, self._address, connectable=True),
             )
@@ -233,7 +231,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
             client = IseoClient(
                 address=self._address,
                 uuid_bytes=bytes.fromhex(self._uuid_hex),
-                identity_priv=self._priv,
+                identity_priv=self._gw_priv,
                 subtype=self._user_subtype,
                 ble_device=async_ble_device_from_address(self.hass, self._address, connectable=True),
             )
@@ -261,7 +259,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
             client = IseoClient(
                 address=self._address,
                 uuid_bytes=bytes.fromhex(self._uuid_hex),
-                identity_priv=self._priv,
+                identity_priv=self._gw_priv,
                 subtype=self._user_subtype,
                 ble_device=async_ble_device_from_address(self.hass, self._address, connectable=True),
             )
@@ -285,13 +283,12 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
         # Display all users regardless of type (RFID, BT, PIN, etc.)
         all_users = self._bt_users
 
-        name_to_uuid: dict[str, str] = {(u.name or u.uuid_hex[:8]): u.uuid_hex.lower() for u in all_users}
-
         if user_input is not None:
             skip_mapping = user_input.pop("ignore_all", False)
             if not skip_mapping:
+                # Fields are keyed by uuid_hex, so the mapping is direct.
                 self._user_map = {
-                    name_to_uuid[name]: ha_uid for name, ha_uid in user_input.items() if ha_uid and name in name_to_uuid
+                    uuid_key: ha_uid for uuid_key, ha_uid in user_input.items() if ha_uid
                 }
 
             return await self.async_step_admin_choice()
@@ -304,8 +301,8 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
 
         fields: dict = {vol.Optional("ignore_all", default=False): bool}
         for u in all_users:
-            name = u.name or u.uuid_hex[:8]
-            fields[vol.Optional(name)] = SelectSelector(
+            label = u.name or u.uuid_hex[:8]
+            fields[vol.Optional(u.uuid_hex.lower(), description={"label": label})] = SelectSelector(
                 SelectSelectorConfig(
                     options=ha_user_options,
                     mode=SelectSelectorMode.DROPDOWN,
@@ -347,16 +344,14 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
 
     async def async_step_admin_setup(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Step to trigger Admin Identity generation."""
-        # This step is now strictly for generation and proceeding to enrollment
-        priv = ec.generate_private_key(ec.SECP224R1(), default_backend())
-        if not isinstance(priv, ec.EllipticCurvePrivateKey):
-            raise TypeError("Expected EllipticCurvePrivateKey")
-        priv_int = priv.private_numbers().private_value  # type: ignore[attr-defined]
-        new_uuid = uuid_module.uuid4().bytes
+        if not self._admin_uuid_hex:
+            priv = _generate_identity()
+            priv_int = priv.private_numbers().private_value  # type: ignore[attr-defined]
+            new_uuid = uuid_module.uuid4().bytes
 
-        self._admin_uuid_hex = new_uuid.hex()
-        self._admin_priv_scalar = hex(priv_int)
-        self._priv = priv  # Temporary store for the enrollment step
+            self._admin_uuid_hex = new_uuid.hex()
+            self._admin_priv_scalar = hex(priv_int)
+            self._admin_priv = priv
 
         return await self.async_step_admin_enroll()
 
@@ -367,7 +362,7 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
             client = IseoClient(
                 address=self._address,
                 uuid_bytes=bytes.fromhex(self._admin_uuid_hex),
-                identity_priv=self._priv,
+                identity_priv=self._admin_priv,
                 subtype=UserSubType.BT_SMARTPHONE,
                 ble_device=async_ble_device_from_address(self.hass, self._address, connectable=True),
             )
@@ -379,17 +374,9 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
                 _LOGGER.error("Admin enrollment failed: %s", exc)
                 errors["base"] = "auth_failed"
 
-        from homeassistant.helpers.selector import TextSelector, TextSelectorConfig
-
         return self.async_show_form(
             step_id="admin_enroll",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional("uuid_display", default=self._admin_uuid_hex.upper()): TextSelector(
-                        TextSelectorConfig(multiline=False)
-                    ),
-                }
-            ),
+            data_schema=vol.Schema({}),
             description_placeholders={"uuid": self._admin_uuid_hex.upper()},
             errors=errors,
         )
@@ -418,21 +405,17 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
 class IseoOptionsFlow(config_entries.OptionsFlow):
     """Options flow for mapping Argo users to HA accounts and managing admin identity."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._config_entry = config_entry
+    def __init__(self) -> None:
         self._bt_users: list = []
         self._admin_uuid_hex: str = ""
         self._admin_priv_scalar: str = ""
-        self._priv: Any = None
+        self._admin_priv: Any = None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Menu to choose between User Management and Admin Identity."""
         if user_input is not None:
             choice = user_input["management_choice"]
             if choice == "users":
-                if CONF_ADMIN_UUID in self._config_entry.data:
-                    # Skip the refresh instruction step and go straight to the logic
-                    return await self.async_step_user_management_refresh({})
                 return await self.async_step_user_management_refresh()
             return await self.async_step_admin_identity()
 
@@ -457,67 +440,65 @@ class IseoOptionsFlow(config_entries.OptionsFlow):
     async def async_step_user_management_refresh(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Step to refresh user list (automatically if admin exists, otherwise requires card)."""
         errors: dict[str, str] = {}
-        has_admin = CONF_ADMIN_UUID in self._config_entry.data
+        has_admin = CONF_ADMIN_UUID in self.config_entry.data
+
+        # When an admin identity is configured, skip the instruction form and proceed directly.
+        if user_input is None and has_admin:
+            user_input = {}
 
         if user_input is not None:
             # Safely get the coordinator. It might not be in hass.data if the entry is being
             # configured but hasn't successfully loaded yet.
             domain_data = self.hass.data.get(DOMAIN, {})
-            entry_data = domain_data.get(self._config_entry.entry_id, {})
+            entry_data = domain_data.get(self.config_entry.entry_id, {})
             coordinator = entry_data.get("coordinator")
 
-            client: IseoClient
-            if coordinator:
-                client = coordinator.client
-            else:
-                # Fallback: Create a temporary client if integration isn't loaded
-                _LOGGER.debug("Coordinator not found; creating temporary client for user refresh")
-                priv_int = int(self._config_entry.data[CONF_PRIV_SCALAR], 16)
-                priv = await self.hass.async_add_executor_job(
-                    ec.derive_private_key, priv_int, ec.SECP224R1(), default_backend()
-                )
-                client = IseoClient(
-                    address=self._config_entry.data[CONF_ADDRESS],
-                    uuid_bytes=bytes.fromhex(self._config_entry.data[CONF_UUID]),
-                    identity_priv=priv,
-                    subtype=self._config_entry.data.get(CONF_USER_SUBTYPE, UserSubType.BT_GATEWAY),
-                )
-
-            orig_uuid = client._uuid_bytes
-            orig_priv = client._identity_priv
-            orig_subtype = client._subtype
-
             try:
-                client._ble_device = async_ble_device_from_address(
-                    self.hass, self._config_entry.data[CONF_ADDRESS], connectable=True
-                )
                 if has_admin:
                     _LOGGER.debug("Refreshing users using configured admin identity")
-                    # Reconstruct admin private key
-                    priv_int = int(self._config_entry.data[CONF_ADMIN_PRIV_SCALAR], 16)
-                    admin_priv = await self.hass.async_add_executor_job(
-                        ec.derive_private_key, priv_int, ec.SECP224R1(), default_backend()
+                    if coordinator:
+                        admin_client = await self.hass.async_add_executor_job(coordinator.make_admin_client)
+                    else:
+                        priv_int = int(self.config_entry.data[CONF_ADMIN_PRIV_SCALAR], 16)
+                        admin_priv = await self.hass.async_add_executor_job(
+                            ec.derive_private_key, priv_int, ec.SECP224R1(), default_backend()
+                        )
+                        admin_client = IseoClient(
+                            address=self.config_entry.data[CONF_ADDRESS],
+                            uuid_bytes=bytes.fromhex(self.config_entry.data[CONF_ADMIN_UUID]),
+                            identity_priv=admin_priv,
+                            subtype=UserSubType.BT_SMARTPHONE,
+                        )
+                    admin_client.update_ble_device(
+                        async_ble_device_from_address(self.hass, self.config_entry.data[CONF_ADDRESS], connectable=True)
                     )
-                    # Temporarily use admin credentials
-                    client._uuid_bytes = bytes.fromhex(self._config_entry.data[CONF_ADMIN_UUID])
-                    client._identity_priv = admin_priv
-                    client._subtype = UserSubType.BT_SMARTPHONE
-
-                    self._bt_users = await client.read_users(skip_login=False)
+                    self._bt_users = await admin_client.read_users(skip_login=False)
                 else:
                     _LOGGER.debug("Refreshing users using Master Card scan")
-                    self._bt_users = await client.read_users(skip_login=True)
+                    if coordinator:
+                        gw_client = coordinator.client
+                    else:
+                        # Fallback: Create a temporary client if integration isn't loaded
+                        _LOGGER.debug("Coordinator not found; creating temporary client for user refresh")
+                        priv_int = int(self.config_entry.data[CONF_PRIV_SCALAR], 16)
+                        priv = await self.hass.async_add_executor_job(
+                            ec.derive_private_key, priv_int, ec.SECP224R1(), default_backend()
+                        )
+                        gw_client = IseoClient(
+                            address=self.config_entry.data[CONF_ADDRESS],
+                            uuid_bytes=bytes.fromhex(self.config_entry.data[CONF_UUID]),
+                            identity_priv=priv,
+                            subtype=self.config_entry.data.get(CONF_USER_SUBTYPE, UserSubType.BT_GATEWAY),
+                        )
+                    gw_client.update_ble_device(
+                        async_ble_device_from_address(self.hass, self.config_entry.data[CONF_ADDRESS], connectable=True)
+                    )
+                    self._bt_users = await gw_client.read_users(skip_login=True)
 
                 return await self.async_step_map_users()
             except (IseoConnectionError, IseoAuthError) as exc:
                 _LOGGER.error("Failed to refresh users: %s", exc)
                 errors["base"] = "auth_failed"
-            finally:
-                if has_admin:
-                    # Restore original Gateway credentials
-                    client._uuid_bytes = orig_uuid
-                    client._identity_priv = orig_priv
-                    client._subtype = orig_subtype
 
         return self.async_show_form(
             step_id="user_management_refresh",
@@ -530,30 +511,28 @@ class IseoOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             choice = user_input["admin_action"]
             if choice == "remove":
-                new_data = dict(self._config_entry.data)
+                new_data = dict(self.config_entry.data)
                 new_data.pop(CONF_ADMIN_UUID, None)
                 new_data.pop(CONF_ADMIN_PRIV_SCALAR, None)
-                self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
+                self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
                 return self.async_create_entry(title="", data={})
 
             if choice == "setup":
                 # Generate new identity
-                priv = ec.generate_private_key(ec.SECP224R1(), default_backend())
-                if not isinstance(priv, ec.EllipticCurvePrivateKey):
-                    raise TypeError("Expected EllipticCurvePrivateKey")
+                priv = _generate_identity()
                 priv_int = priv.private_numbers().private_value  # type: ignore[attr-defined]
                 new_uuid = uuid_module.uuid4().bytes
 
                 self._admin_uuid_hex = new_uuid.hex()
                 self._admin_priv_scalar = hex(priv_int)
-                self._priv = priv  # Temporary store for the enrollment step
+                self._admin_priv = priv
 
                 return await self.async_step_admin_enroll()
 
             # choice == "none"
             return self.async_create_entry(title="", data={})
 
-        has_admin = CONF_ADMIN_UUID in self._config_entry.data
+        has_admin = CONF_ADMIN_UUID in self.config_entry.data
         options = [
             {"value": "setup", "label": "Configure/Rotate Admin Identity"},
             {"value": "none", "label": "Keep current configuration"},
@@ -580,65 +559,34 @@ class IseoOptionsFlow(config_entries.OptionsFlow):
         """Step to show generated UUID and enroll via Open command."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            domain_data = self.hass.data.get(DOMAIN, {})
-            entry_data = domain_data.get(self._config_entry.entry_id, {})
-            coordinator = entry_data.get("coordinator")
-
-            client: IseoClient
-            if coordinator:
-                client = coordinator.client
-            else:
-                # Fallback: create temporary client if integration isn't loaded
-                client = IseoClient(
-                    address=self._config_entry.data[CONF_ADDRESS],
-                    uuid_bytes=bytes.fromhex(self._admin_uuid_hex),
-                    identity_priv=self._priv,
-                    subtype=UserSubType.BT_SMARTPHONE,
-                )
-
-            client._ble_device = async_ble_device_from_address(
-                self.hass, self._config_entry.data[CONF_ADDRESS], connectable=True
+            # Use a dedicated client with the new admin credentials — never mutate the shared coordinator client.
+            enroll_client = IseoClient(
+                address=self.config_entry.data[CONF_ADDRESS],
+                uuid_bytes=bytes.fromhex(self._admin_uuid_hex),
+                identity_priv=self._admin_priv,
+                subtype=UserSubType.BT_SMARTPHONE,
+                ble_device=async_ble_device_from_address(
+                    self.hass, self.config_entry.data[CONF_ADDRESS], connectable=True
+                ),
             )
 
-            # We must temporarily use the admin credentials to perform the first open
-            orig_uuid = client._uuid_bytes
-            orig_priv = client._identity_priv
-            orig_subtype = client._subtype
-
-            client._uuid_bytes = bytes.fromhex(self._admin_uuid_hex)
-            client._identity_priv = self._priv
-            client._subtype = UserSubType.BT_SMARTPHONE
-
             try:
-                await client.open_lock()
+                await enroll_client.open_lock()
 
                 # Success! Save the new admin identity to the entry data
-                new_data = dict(self._config_entry.data)
+                new_data = dict(self.config_entry.data)
                 new_data[CONF_ADMIN_UUID] = self._admin_uuid_hex
                 new_data[CONF_ADMIN_PRIV_SCALAR] = self._admin_priv_scalar
-                self.hass.config_entries.async_update_entry(self._config_entry, data=new_data)
+                self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
 
                 return self.async_create_entry(title="", data={})
             except (IseoConnectionError, IseoAuthError) as exc:
                 _LOGGER.error("Admin enrollment failed: %s", exc)
                 errors["base"] = "auth_failed"
-            finally:
-                # Restore original client state
-                client._uuid_bytes = orig_uuid
-                client._identity_priv = orig_priv
-                client._subtype = orig_subtype
-
-        from homeassistant.helpers.selector import TextSelector, TextSelectorConfig
 
         return self.async_show_form(
             step_id="admin_enroll",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional("uuid_display", default=self._admin_uuid_hex.upper()): TextSelector(
-                        TextSelectorConfig(multiline=False)
-                    ),
-                }
-            ),
+            data_schema=vol.Schema({}),
             description_placeholders={"uuid": self._admin_uuid_hex.upper()},
             errors=errors,
         )
@@ -648,19 +596,12 @@ class IseoOptionsFlow(config_entries.OptionsFlow):
         # Display all users regardless of type (RFID, BT, PIN, etc.)
         all_users = self._bt_users
 
-        name_to_uuid: dict[str, str] = {(u.name or u.uuid_hex[:8]): u.uuid_hex.lower() for u in all_users}
-
         if user_input is not None:
-            mapping = {
-                name_to_uuid[name]: ha_uid for name, ha_uid in user_input.items() if ha_uid and name in name_to_uuid
-            }
+            # Fields are keyed by uuid_hex, so the mapping is direct.
+            mapping = {uuid_key: ha_uid for uuid_key, ha_uid in user_input.items() if ha_uid}
             return self.async_create_entry(title="", data={CONF_USER_MAP: mapping})
 
-        current_map: dict[str, str] = self._config_entry.options.get(CONF_USER_MAP, {})
-        uuid_to_name = {v: k for k, v in name_to_uuid.items()}
-        name_defaults: dict[str, str] = {
-            uuid_to_name[uuid_key]: ha_uid for uuid_key, ha_uid in current_map.items() if uuid_key in uuid_to_name
-        }
+        current_map: dict[str, str] = self.config_entry.options.get(CONF_USER_MAP, {})
 
         ha_users = await self.hass.auth.async_get_users()
         ha_user_options = [
@@ -669,10 +610,13 @@ class IseoOptionsFlow(config_entries.OptionsFlow):
 
         fields: dict = {}
         for u in all_users:
-            name = u.name or u.uuid_hex[:8]
-            default = name_defaults.get(name)
-            desc = {"suggested_value": default} if default else {}
-            fields[vol.Optional(name, description=desc)] = SelectSelector(
+            uuid_key = u.uuid_hex.lower()
+            label = u.name or u.uuid_hex[:8]
+            default = current_map.get(uuid_key)
+            desc: dict = {"label": label}
+            if default:
+                desc["suggested_value"] = default
+            fields[vol.Optional(uuid_key, description=desc)] = SelectSelector(
                 SelectSelectorConfig(
                     options=ha_user_options,
                     mode=SelectSelectorMode.DROPDOWN,

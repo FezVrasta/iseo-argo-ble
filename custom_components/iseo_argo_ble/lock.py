@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.components.bluetooth import async_ble_device_from_address
@@ -40,7 +40,7 @@ async def async_setup_entry(
     subtype = entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE)
 
     async_add_entities(
-        [IseoLockEntity(entry, uuid_bytes, coordinator._identity_priv, subtype, coordinator.client)],
+        [IseoLockEntity(entry, uuid_bytes, coordinator.identity_priv, subtype, coordinator.client)],
         update_before_add=False,
     )
 
@@ -82,6 +82,8 @@ class IseoLockEntity(LockEntity):
         # Assume locked until we successfully open it.
         self._attr_is_locked = True
         self._attr_is_unlocking = False
+        # Polls are suppressed until this time to avoid premature snap-back after unlock.
+        self._poll_suppress_until: datetime | None = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
     async def async_added_to_hass(self) -> None:
@@ -93,14 +95,14 @@ class IseoLockEntity(LockEntity):
     async def _poll_state(self, _now: Any = None) -> None:
         """Read door state via TLV_INFO and update HA state."""
         if self._ble_lock.locked():
-            # Another BLE operation is already in progress; skip this cycle.
+            _LOGGER.debug("Skipping poll cycle — BLE operation already in progress")
             return
 
         try:
             async with self._ble_lock:
                 # Re-read BLE device just in case it moved/changed
-                self.client._ble_device = async_ble_device_from_address(
-                    self.hass, self._entry.data[CONF_ADDRESS], connectable=True
+                self.client.update_ble_device(
+                    async_ble_device_from_address(self.hass, self._entry.data[CONF_ADDRESS], connectable=True)
                 )
                 state: LockState = await self.client.read_state()
         except (IseoConnectionError, IseoAuthError) as exc:
@@ -132,8 +134,11 @@ class IseoLockEntity(LockEntity):
 
         self._door_status_supported = True
 
-        # Don't override state while an unlock command is in flight.
+        # Don't override state while an unlock command is in flight, or while we're
+        # within the post-unlock suppression window (door sensor may still read closed).
         if self._attr_is_unlocking:
+            return
+        if self._poll_suppress_until and datetime.now(tz=timezone.utc) < self._poll_suppress_until:
             return
 
         new_locked = state.door_closed
@@ -150,26 +155,33 @@ class IseoLockEntity(LockEntity):
     def _set_unlocked(self) -> None:
         self._attr_is_unlocking = False
         self._attr_is_locked = False
+        # Suppress polls for a few seconds so the door sensor has time to reflect the open state.
+        self._poll_suppress_until = datetime.now(tz=timezone.utc) + timedelta(seconds=_RELOCK_DELAY)
         self.async_write_ha_state()
 
     def _set_locked(self) -> None:
         self._attr_is_unlocking = False
         self._attr_is_locked = True
+        self._poll_suppress_until = None
         self.async_write_ha_state()
 
     async def _auto_relock(self) -> None:
         """Revert to 'locked' after the motor has re-latched."""
-        # If the lock has a door sensor, we don't force a locked state.
-        # We wait for the sensor to report 'closed' via polling.
-        if self._door_status_supported:
-            _LOGGER.debug("Door status supported; skipping timer-based auto-relock")
-            # Trigger a poll soon to catch the new state
-            await asyncio.sleep(2)
-            await self._poll_state()
-            return
+        try:
+            # If the lock has a door sensor, we don't force a locked state.
+            # We wait for the sensor to report 'closed' via polling.
+            if self._door_status_supported:
+                _LOGGER.debug("Door status supported; skipping timer-based auto-relock")
+                # Trigger a poll soon to catch the new state
+                await asyncio.sleep(2)
+                await self._poll_state()
+                return
 
-        await asyncio.sleep(_RELOCK_DELAY)
-        self._set_locked()
+            await asyncio.sleep(_RELOCK_DELAY)
+            self._set_locked()
+        except asyncio.CancelledError:
+            # Intentional: a new unlock() call cancels the previous relock timer.
+            pass
 
     # ── LockEntity interface ───────────────────────────────────────────────
     async def async_unlock(self, **kwargs: Any) -> None:
@@ -182,8 +194,8 @@ class IseoLockEntity(LockEntity):
         try:
             async with self._ble_lock:
                 # Re-read BLE device just in case it moved/changed
-                self.client._ble_device = async_ble_device_from_address(
-                    self.hass, self._entry.data[CONF_ADDRESS], connectable=True
+                self.client.update_ble_device(
+                    async_ble_device_from_address(self.hass, self._entry.data[CONF_ADDRESS], connectable=True)
                 )
                 if self._user_subtype == UserSubType.BT_GATEWAY:
                     # Use credential-less remote opening.
@@ -208,7 +220,7 @@ class IseoLockEntity(LockEntity):
             raise HomeAssistantError(
                 f"Lock rejected identity: {exc}. Ensure the UUID is registered in the Argo app."
             ) from exc
-        except (IseoConnectionError, Exception) as exc:
+        except (IseoConnectionError, asyncio.TimeoutError) as exc:
             self._set_locked()
             raise HomeAssistantError(f"Could not connect to lock: {exc}") from exc
 
@@ -218,7 +230,6 @@ class IseoLockEntity(LockEntity):
     async def async_lock(self, **kwargs: Any) -> None:
         """
         Not supported — the ISEO X1R re-latches physically after every open.
-        This is a no-op so HA automations calling 'lock' don't throw errors.
+        Do nothing and let the next poll reflect the real state.
         """
         _LOGGER.debug("async_lock called on ISEO lock — no-op (lock re-latches automatically)")
-        self._set_locked()

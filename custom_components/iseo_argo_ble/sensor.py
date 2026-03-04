@@ -6,11 +6,12 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, Sen
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .ble_client import LogEntry
-from .const import DOMAIN
+from .ble_client import LogEntry, battery_enum_to_pct
+from .const import CONF_ADDRESS, DOMAIN
 from .coordinator import IseoLogCoordinator, _resolve_actor, entry_message, event_name
 
 
@@ -37,9 +38,7 @@ class IseoLastEventSensor(CoordinatorEntity[IseoLogCoordinator], SensorEntity):
     def __init__(self, coordinator: IseoLogCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._entry = entry
-        self._attr_unique_id = f"{entry.data['address'].replace(':', '').lower()}_last_event"
-        from homeassistant.helpers.device_registry import DeviceInfo
-
+        self._attr_unique_id = f"{entry.data[CONF_ADDRESS].replace(':', '').lower()}_last_event"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
         )
@@ -78,9 +77,7 @@ class IseoBatterySensor(CoordinatorEntity[IseoLogCoordinator], SensorEntity):
 
     def __init__(self, coordinator: IseoLogCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.data['address'].replace(':', '').lower()}_battery"
-        from homeassistant.helpers.device_registry import DeviceInfo
-
+        self._attr_unique_id = f"{entry.data[CONF_ADDRESS].replace(':', '').lower()}_battery"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
         )
@@ -88,4 +85,4 @@ class IseoBatterySensor(CoordinatorEntity[IseoLogCoordinator], SensorEntity):
     @property
     def native_value(self) -> int | None:
         entry: LogEntry | None = self.coordinator.data
-        return entry.battery if entry is not None else None
+        return battery_enum_to_pct(entry.battery) if entry is not None else None

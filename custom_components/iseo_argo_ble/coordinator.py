@@ -21,6 +21,7 @@ from .ble_client import (
     LogEntry,
     UserEntry,
     UserSubType,
+    battery_enum_to_pct,
 )
 from .const import CONF_ADDRESS, CONF_ADMIN_PRIV_SCALAR, CONF_ADMIN_UUID, CONF_USER_MAP, DOMAIN, EVENT_TYPE
 
@@ -89,15 +90,23 @@ def event_name(code: int) -> str:
     return _EVENT_NAMES.get(code, f"Event {code}")
 
 
-def _resolve_actor(raw: str, user_dir: dict[str, str]) -> str:
-    """Return a display name for raw user_info: looks up 32-char hex UUIDs in user_dir."""
+def _bt_uuid_key(raw: str) -> str | None:
+    """Return the lower-case hex key if raw is a valid 32-char hex BT UUID, else None."""
     key = raw.lower()
     if len(key) == 32:
         try:
             bytes.fromhex(key)
-            return user_dir.get(key, raw)
+            return key
         except ValueError:
             pass
+    return None
+
+
+def _resolve_actor(raw: str, user_dir: dict[str, str]) -> str:
+    """Return a display name for raw user_info: looks up 32-char hex UUIDs in user_dir."""
+    key = _bt_uuid_key(raw)
+    if key is not None:
+        return user_dir.get(key, raw)
     return raw
 
 
@@ -142,6 +151,7 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
         self._user_dir_ts: datetime | None = None
         # Full user list from last whitelist fetch
         self._users: list[UserEntry] = []
+        self._users_fetched: bool = False
 
         # Maintain a single client instance to reuse connection slots
         self.client = IseoClient(
@@ -162,6 +172,11 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
         """Return the full whitelist user list from the last fetch."""
         return self._users
 
+    @property
+    def identity_priv(self) -> Any:
+        """Return the gateway identity private key."""
+        return self._identity_priv
+
     async def _refresh_user_dir(self) -> None:
         """Fetch the whitelist from the lock and rebuild the name directory."""
         try:
@@ -172,61 +187,66 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
                 fetch_client = admin_client
                 skip = False
             else:
-                self.client._ble_device = async_ble_device_from_address(
-                    self.hass, self._entry.data[CONF_ADDRESS], connectable=True
+                self.client.update_ble_device(
+                    async_ble_device_from_address(self.hass, self._entry.data[CONF_ADDRESS], connectable=True)
                 )
                 fetch_client = self.client
                 skip = True
             users: list[UserEntry] = await fetch_client.read_users(skip_login=skip)
         except (IseoConnectionError, IseoAuthError) as exc:
-            _LOGGER.debug("User directory refresh failed: %s", exc)
+            _LOGGER.warning("User directory refresh failed (actor names may be stale): %s", exc)
             return
         except Exception as exc:
-            _LOGGER.debug("Unexpected error during user refresh: %s", exc)
+            _LOGGER.warning("Unexpected error during user refresh (actor names may be stale): %s", exc)
             return
 
         self._users = users
-        # Only store users that have a non-empty name set.
-        self._user_dir = {u.uuid_hex.lower(): u.name for u in users if u.name}
+        self._users_fetched = True
+        # Include all users; fall back to the UUID hex string for unnamed users so that
+        # log entries are never attributed to an anonymous raw UUID in the event stream.
+        self._user_dir = {u.uuid_hex.lower(): u.name or u.uuid_hex.upper() for u in users}
         self._user_dir_ts = datetime.now(tz=timezone.utc)
         _LOGGER.debug(
-            "User directory refreshed: %d named users (of %d total)",
-            len(self._user_dir),
+            "User directory refreshed: %d users (%d named)",
             len(users),
+            sum(1 for u in users if u.name),
         )
 
     async def _async_update_data(self) -> "LogEntry | None":
         try:
             # Re-read BLE device just in case it moved/changed
-            self.client._ble_device = async_ble_device_from_address(
-                self.hass, self._entry.data[CONF_ADDRESS], connectable=True
+            self.client.update_ble_device(
+                async_ble_device_from_address(self.hass, self._entry.data[CONF_ADDRESS], connectable=True)
             )
             entries = await self.client.gw_read_unread_logs(connect_timeout=20.0)
         except (IseoConnectionError, IseoAuthError) as exc:
             raise UpdateFailed(f"Log fetch failed: {exc}") from exc
 
         # Ensure user list is populated on first load, regardless of log activity.
-        if not self._users:
+        user_dir_refreshed = False
+        if not self._users_fetched:
             await self._refresh_user_dir()
+            user_dir_refreshed = True
 
         if not entries:
             return self.data  # keep last known value
 
-        # Refresh user directory if stale or if the whitelist changed.
+        # Refresh if stale or if a whitelist-change event arrived —
+        # but skip if already refreshed above to avoid a duplicate BLE connection.
         now = datetime.now(tz=timezone.utc)
-        if (
+        if not user_dir_refreshed and (
             self._user_dir_ts is None
             or (now - self._user_dir_ts) >= _USER_REFRESH_INTERVAL
             or any(e.event_code in _USER_CHANGE_EVENT_CODES for e in entries)
         ):
             await self._refresh_user_dir()
 
-        entity_id = self._lock_entity_id()
+        entity_id = self._get_lock_entity_id()
         user_map: dict[str, str] = self._entry.options.get(CONF_USER_MAP, {})
         for e in entries:  # gw_read_unread_logs returns oldest-first
             raw_actor = e.user_info.strip() or e.extra_description.strip()
             actor = _resolve_actor(raw_actor, self._user_dir) if raw_actor else ""
-            uuid_key = raw_actor.lower() if len(raw_actor) == 32 else None
+            uuid_key = _bt_uuid_key(raw_actor) if raw_actor else None
             ha_user_id = user_map.get(uuid_key) if uuid_key else None
             event_ctx = Context(user_id=ha_user_id) if ha_user_id else None
             self.hass.bus.async_fire(
@@ -238,7 +258,7 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
                     "message": entry_message(e, self._user_dir),
                     "actor": actor,
                     "timestamp": e.timestamp.isoformat(),
-                    "battery": e.battery,
+                    "battery_pct": battery_enum_to_pct(e.battery),
                 },
                 context=event_ctx,
             )
@@ -265,7 +285,7 @@ class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):
             ),
         )
 
-    def _lock_entity_id(self) -> str | None:
+    def _get_lock_entity_id(self) -> str | None:
         """Look up the lock entity_id from the entity registry."""
         unique_id = f"{self._entry.data[CONF_ADDRESS].replace(':', '').lower()}_lock"
         registry = er.async_get(self.hass)

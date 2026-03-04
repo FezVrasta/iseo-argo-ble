@@ -13,9 +13,10 @@ def async_describe_events(hass, async_describe_event) -> None:
     @callback
     def _describe(event) -> dict:
         data = event.data
+        message = data.get("message") or data.get("name") or "access event"
         return {
             "name": "ISEO Lock",
-            "message": data.get("message", "access event"),
+            "message": message,
         }
 
     async_describe_event(DOMAIN, EVENT_TYPE, _describe)

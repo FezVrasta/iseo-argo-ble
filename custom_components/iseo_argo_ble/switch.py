@@ -18,19 +18,29 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .ble_client import IseoAuthError, IseoConnectionError, UserEntry
-from .const import CONF_ADMIN_PRIV_SCALAR, CONF_ADMIN_UUID, CONF_UUID, DOMAIN
+from .ble_client import (
+    IseoAuthError,
+    IseoConnectionError,
+    USER_TYPE_RFID,
+    USER_TYPE_BT,
+    USER_TYPE_PIN,
+    USER_TYPE_INVITATION,
+    USER_TYPE_FINGERPRINT,
+    USER_TYPE_ACCOUNT,
+    UserEntry,
+)
+from .const import CONF_ADDRESS, CONF_ADMIN_PRIV_SCALAR, CONF_ADMIN_UUID, CONF_UUID, DOMAIN
 from .coordinator import IseoLogCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
 _USER_TYPE_LABELS: dict[int, str] = {
-    16: "RFID",
-    17: "Bluetooth",
-    18: "PIN",
-    19: "Invitation",
-    20: "Fingerprint",
-    21: "Account",
+    USER_TYPE_RFID: "RFID",
+    USER_TYPE_BT: "Bluetooth",
+    USER_TYPE_PIN: "PIN",
+    USER_TYPE_INVITATION: "Invitation",
+    USER_TYPE_FINGERPRINT: "Fingerprint",
+    USER_TYPE_ACCOUNT: "Account",
 }
 
 
@@ -93,7 +103,7 @@ class IseoUserSwitch(CoordinatorEntity[IseoLogCoordinator], SwitchEntity):
         self._uuid_hex = user.uuid_hex.lower()
         self._user_type = user.user_type
         self._optimistic_state: bool | None = None
-        addr = entry.data["address"].replace(":", "").lower()
+        addr = entry.data[CONF_ADDRESS].replace(":", "").lower()
         self._attr_unique_id = f"{addr}_user_{self._uuid_hex}"
         type_label = _USER_TYPE_LABELS.get(user.user_type, f"type{user.user_type}")
         self._attr_name = user.name or f"{type_label} {self._uuid_hex[:8]}"
@@ -147,9 +157,12 @@ class IseoUserSwitch(CoordinatorEntity[IseoLogCoordinator], SwitchEntity):
                 disabled=disabled,
             )
         except (IseoAuthError, IseoConnectionError) as exc:
-            self._optimistic_state = None
-            self.async_write_ha_state()
             action = "disable" if disabled else "enable"
             raise HomeAssistantError(f"Failed to {action} user: {exc}") from exc
-        # Coordinator refresh will confirm the real state and clear the optimistic value.
+        finally:
+            # Always clear the optimistic state so the UI reverts to coordinator truth
+            # on any exception (including unexpected ones), not just known BLE errors.
+            self._optimistic_state = None
+            self.async_write_ha_state()
+        # Coordinator refresh will confirm the real state.
         await self.coordinator.async_request_refresh()

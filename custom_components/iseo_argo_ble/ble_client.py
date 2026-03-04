@@ -129,16 +129,16 @@ _SIG = bytes(
         0x3D,
     ]
 )
-_BASE_PL_KEY = bytes(a ^ b for a, b in zip(_PL, _M, strict=False))
-_BASE_SIG_KEY = bytes(a ^ b for a, b in zip(_SIG, _M, strict=False))
+_BASE_PL_KEY = bytes(a ^ b for a, b in zip(_PL, _M, strict=True))
+_BASE_SIG_KEY = bytes(a ^ b for a, b in zip(_SIG, _M, strict=True))
 
 _LM = bytes([0x22, 0x33, 0x11, 0x55, 0x44, 0x11, 0x77, 0x22, 0x11, 0x33, 0x44, 0x22, 0x55])
 _LABEL = bytes([0x6B, 0x72, 0x52, 0x1D, 0x31, 0x73, 0x24, 0x47, 0x62, 0x40, 0x2D, 0x4D, 0x3B])
-_KDF_LABEL = bytes(a ^ b for a, b in zip(_LABEL, _LM, strict=False))
+_KDF_LABEL = bytes(a ^ b for a, b in zip(_LABEL, _LM, strict=True))
 
 _CM = bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC])
 _CTX = bytes([0x11, 0x37, 0x71, 0xE8, 0x89, 0x99, 0x77, 0x9D, 0xDB, 0x06, 0x67, 0x33])
-_KDF_CONTEXT = bytes(a ^ b for a, b in zip(_CTX, _CM, strict=False))
+_KDF_CONTEXT = bytes(a ^ b for a, b in zip(_CTX, _CM, strict=True))
 
 # ── Protocol constants ────────────────────────────────────────────────────────
 _SBT_PREAMBLE = 42602  # 0xA66A
@@ -152,8 +152,6 @@ _FT_SESSION_HANDSHAKE = 2
 _FT_SESSION_FIN = 3
 _FT_DATA = 4
 _FT_ERROR = 5
-
-_CSL_VERSION = 2
 
 _CRYPTO_SYS_ECDH = 17  # AES128_ECDH224R1_KD56C
 
@@ -175,6 +173,8 @@ _LOG_STATUS_EOF = {7, 80}  # status codes that mean "no more entries"
 _SBT_STATUS_OK = 0
 _SBT_STATUS_ERROR = -1
 
+_USER_TLV_TAG_ORDER = [0, 1, 2, 3, 4, 5, 7, 16, 8, 32, 9, 17, 20, 18, 19, 21, 22, 23]  # SbtUserDataTlvCodec.java
+
 # SbtInfoClient TLV payload for exchangeInfo (TLV_INFO with client feature level).
 # Tag 1 = featureLevel, value = 9 (FL_9) as UINT16 big-endian.
 # The Argo app always sends this after the ECDH handshake to tell the lock
@@ -188,6 +188,15 @@ _CAP_DOOR_STATUS = 0x80
 _STATE_DOOR_CLOSED = 0x0800
 _STATE_BATTERY_SHIFT = 5
 _STATE_BATTERY_MASK = 0x7  # 3-bit field
+
+# Outer TLV tag / user type values (SbtUserType)
+USER_TYPE_RFID = 16
+USER_TYPE_BT = 17
+USER_TYPE_PIN = 18
+USER_TYPE_INVITATION = 19
+USER_TYPE_FINGERPRINT = 20
+USER_TYPE_ACCOUNT = 21
+_USER_TYPE_RANGE = range(USER_TYPE_RFID, USER_TYPE_ACCOUNT + 1)
 
 # Battery level enum values (SbtDeviceBatteryLevel)
 BATTERY_LEVEL_PERMANENT = 0  # permanently powered
@@ -206,6 +215,21 @@ BATTERY_LEVEL_LABELS: dict[int, str] = {
     BATTERY_LEVEL_VERY_LOW: "Very low",
     BATTERY_LEVEL_CRITICAL: "Critical",
 }
+
+# Approximate percentage for each battery enum value (for HA sensor reporting)
+BATTERY_LEVEL_PCT: dict[int, int] = {
+    BATTERY_LEVEL_PERMANENT: 100,
+    BATTERY_LEVEL_MEASURE: 100,
+    BATTERY_LEVEL_OK: 80,
+    BATTERY_LEVEL_LOW: 30,
+    BATTERY_LEVEL_VERY_LOW: 10,
+    BATTERY_LEVEL_CRITICAL: 5,
+}
+
+
+def battery_enum_to_pct(raw: int) -> int | None:
+    """Convert a raw ISEO battery enum value to an approximate percentage."""
+    return BATTERY_LEVEL_PCT.get(raw)
 
 
 # ── User types ───────────────────────────────────────────────────────────────
@@ -280,8 +304,8 @@ class LogEntry:
         if len(data) != _LOG_ENTRY_SIZE:
             raise ValueError(f"Expected {_LOG_ENTRY_SIZE}B entry, got {len(data)}B")
         event_code = data[0]
-        extra_description = data[1:33].decode("utf-8", errors="replace").rstrip()
-        user_info = data[33:65].decode("utf-8", errors="replace").rstrip()
+        extra_description = data[1:33].decode("utf-8", errors="replace").strip("\x00 ")
+        user_info = data[33:65].decode("utf-8", errors="replace").strip("\x00 ")
         list_code = data[65]
         battery = data[66]
         ts_unix = struct.unpack_from(">I", data, 67)[0]
@@ -325,8 +349,16 @@ def _slip_decode(data: bytes) -> bytes:
                 raise ValueError(f"Bad SLIP escape 0x{b:02x}")
         else:
             result.append(b)
+    if escaped:
+        raise ValueError("Incomplete SLIP escape at end of buffer")
     return bytes(result)
 
+
+# Receive timeouts (seconds)
+_TIMEOUT_CSL_ELECTION = 2     # brief wait for unsolicited CSL frame after connect
+_TIMEOUT_HANDSHAKE = 15       # CSL handshake round-trips (includes crypto)
+_TIMEOUT_OP = 10              # standard SBT command/response
+_TIMEOUT_SLOW_OP = 30         # paginated reads (user blocks, log pages)
 
 # ── CRC helpers ───────────────────────────────────────────────────────────────
 def _make_crc8_table() -> list[int]:
@@ -420,7 +452,8 @@ def _tlv_user_bt(
     """
     inner = _tlv(0, bytes([subtype])) + _tlv(1, uuid_bytes)
     if pub_key_bytes is not None:
-        assert len(pub_key_bytes) == 56
+        if len(pub_key_bytes) != 56:
+            raise ValueError(f"Expected 56-byte public key, got {len(pub_key_bytes)}")
         inner += _tlv(32, pub_key_bytes)
     return _tlv(17, inner)
 
@@ -430,6 +463,8 @@ def bcd_encode_pin(pin: str) -> bytes:
     SbtUserExtraPinBcdCodec format: 7 bytes, BCD, right-aligned, 0xF padded.
     Example "12345" -> FF FF FF FF F1 23 45
     """
+    if not pin.isdigit():
+        raise ValueError("PIN must contain only digits")
     # 14 nibbles total
     s = pin.rjust(14, "f")
     res = bytearray()
@@ -682,6 +717,10 @@ class IseoClient:
         self._pl_key = _BASE_PL_KEY
         self._sig_key = _BASE_SIG_KEY
 
+    def update_ble_device(self, device: Any) -> None:
+        """Update the BLEDevice used for the next connection attempt."""
+        self._ble_device = device
+
     # ── BLE notification handler ───────────────────────────────────────────
     def _on_notify(self, _sender: Any, data: bytearray) -> None:
         self._slip_buf.extend(data)
@@ -767,6 +806,19 @@ class IseoClient:
             finally:
                 await client.disconnect()
         else:
+            if self._ble_device is None and _bleak_establish_connection is not None:
+                # bleak_retry_connector is available (HA production context) but no BLEDevice
+                # was provided — the device is not advertising and we cannot connect reliably.
+                raise IseoConnectionError(
+                    f"{self._address}: BLEDevice not found; device may be out of range or not advertising"
+                )
+            # CLI / standalone path: bleak_retry_connector not installed, fall back to address-only.
+            if self._ble_device is None:
+                _LOGGER.warning(
+                    "%s: BLEDevice not set and bleak-retry-connector unavailable; "
+                    "using address-only BleakClient (less reliable).",
+                    self._address,
+                )
             async with BleakClient(self._address, timeout=timeout) as client:
                 yield client
 
@@ -790,7 +842,7 @@ class IseoClient:
         req = struct.pack(">H", _CRYPTO_SYS_ECDH) + local_pub + local_rnd
         await self._send_csl(client, _FT_SESSION_REQUEST, req)
 
-        resp = await self._recv_csl(timeout=15)
+        resp = await self._recv_csl(timeout=_TIMEOUT_HANDSHAKE)
         if resp["frame_type"] == _FT_ERROR:
             err_code = struct.unpack_from(">H", resp["raw_data"])[0] if len(resp["raw_data"]) >= 2 else "unknown"
             raise IseoConnectionError(f"Lock rejected session request (step 1) with CSL error code {err_code}")
@@ -815,7 +867,7 @@ class IseoClient:
         step2_enc = _shs_encrypt(kb2 + kb0, shs_pl, shs_sig)
         await self._send_csl(client, _FT_SESSION_HANDSHAKE, step2_enc)
 
-        resp2 = await self._recv_csl(timeout=15)
+        resp2 = await self._recv_csl(timeout=_TIMEOUT_HANDSHAKE)
         if resp2["frame_type"] == _FT_ERROR:
             err_code = struct.unpack_from(">H", resp2["raw_data"])[0] if len(resp2["raw_data"]) >= 2 else "unknown"
             raise IseoConnectionError(f"Lock rejected handshake (step 3) with CSL error code {err_code}")
@@ -845,7 +897,7 @@ class IseoClient:
                 raise IseoConnectionError("Handshake timed out") from exc
 
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
 
@@ -866,7 +918,7 @@ class IseoClient:
             await self._send_sbt(client, _OP_TLV_OPEN, payload)
 
             try:
-                sbt = await self._recv_sbt(timeout=10)
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("No response to TLV_OPEN") from exc
 
@@ -890,7 +942,7 @@ class IseoClient:
             await self._handshake(client)
 
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
 
@@ -908,7 +960,7 @@ class IseoClient:
             await self._send_sbt(client, _OP_TLV_OPEN, payload)
 
             try:
-                sbt = await self._recv_sbt(timeout=10)
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("No response to TLV_OPEN") from exc
 
@@ -939,14 +991,14 @@ class IseoClient:
                 raise IseoConnectionError("Handshake timed out") from exc
 
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
 
             await self._send_sbt(client, _OP_TLV_INFO)
 
             try:
-                sbt = await self._recv_sbt(timeout=10)
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("No response to TLV_INFO") from exc
 
@@ -1015,7 +1067,7 @@ class IseoClient:
                 raise IseoConnectionError("Handshake timed out") from exc
 
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
 
@@ -1027,7 +1079,7 @@ class IseoClient:
             _LOGGER.debug("Sending exchangeInfo (TLV_INFO with FL_9 payload)")
             await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
             try:
-                info_resp = await self._recv_sbt(timeout=10)
+                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("No response to exchangeInfo") from exc
             _LOGGER.debug("exchangeInfo response: %s", info_resp)
@@ -1041,7 +1093,7 @@ class IseoClient:
                 await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
 
                 try:
-                    login_resp = await self._recv_sbt(timeout=10)
+                    login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
                 except asyncio.TimeoutError as exc:
                     raise IseoConnectionError("No response to TLV_LOGIN") from exc
 
@@ -1065,7 +1117,7 @@ class IseoClient:
                 await self._send_sbt(client, _OP_READ_LOG, req_payload)
 
                 try:
-                    sbt = await self._recv_sbt(timeout=10)
+                    sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
                 except asyncio.TimeoutError as exc:
                     raise IseoConnectionError("No response to READ_LOG") from exc
 
@@ -1126,14 +1178,14 @@ class IseoClient:
                 raise IseoConnectionError("Handshake timed out") from exc
 
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
 
             # exchangeInfo — announce FL_9 so the lock enables FL_3+ commands
             await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
             try:
-                await self._recv_sbt(timeout=10)
+                await self._recv_sbt(timeout=_TIMEOUT_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("No response to exchangeInfo") from exc
 
@@ -1142,7 +1194,7 @@ class IseoClient:
                 login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
                 await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
                 try:
-                    login_resp = await self._recv_sbt(timeout=10)
+                    login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
                 except asyncio.TimeoutError as exc:
                     raise IseoConnectionError("No response to TLV_LOGIN") from exc
 
@@ -1168,7 +1220,7 @@ class IseoClient:
                 await self._send_sbt(client, _OP_TLV_READ_USER_BLOCK, req)
 
                 try:
-                    sbt = await self._recv_sbt(timeout=30 if first_block else 10)
+                    sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP if first_block else _TIMEOUT_OP)
                     first_block = False
                 except asyncio.TimeoutError as exc:
                     raise IseoConnectionError(
@@ -1190,7 +1242,7 @@ class IseoClient:
                 tlv_data = raw[3:]
 
                 for outer_tag, inner_bytes in _parse_tlv_list(tlv_data):
-                    if outer_tag not in range(16, 22):
+                    if outer_tag not in _USER_TYPE_RANGE:
                         continue  # not a recognised user-type tag
                     inner = _parse_tlv(inner_bytes)
                     uuid_raw = inner.get(1, b"")
@@ -1247,7 +1299,7 @@ class IseoClient:
         await self._send_sbt(client, _OP_TLV_LOGIN, pwd_bytes)
 
         try:
-            sbt = await self._recv_sbt(timeout=10)
+            sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
         except asyncio.TimeoutError as exc:
             raise IseoConnectionError("No response to Master Login") from exc
 
@@ -1271,13 +1323,17 @@ class IseoClient:
             await self._handshake(client)
 
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
 
             # exchangeInfo
             await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            await self._recv_sbt(timeout=10)
+            try:
+                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+            except asyncio.TimeoutError as exc:
+                raise IseoConnectionError("No response to exchangeInfo") from exc
+            _LOGGER.debug("exchangeInfo response: %s", info_resp)
 
             # 1. Master Login (only if password provided)
             if master_password:
@@ -1305,7 +1361,7 @@ class IseoClient:
             await self._send_sbt(client, _OP_TLV_STORE_USER_BLOCK, user_tlv)
 
             try:
-                sbt = await self._recv_sbt(timeout=30)
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("No response to register_user (did you scan the Master Card?)") from exc
 
@@ -1344,13 +1400,17 @@ class IseoClient:
             await self._handshake(client)
 
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
 
             # exchangeInfo
             await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            await self._recv_sbt(timeout=10)
+            try:
+                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+            except asyncio.TimeoutError as exc:
+                raise IseoConnectionError("No response to exchangeInfo") from exc
+            _LOGGER.debug("exchangeInfo response: %s", info_resp)
 
             if not skip_login:
                 # 1. Master Login (only if password provided)
@@ -1360,7 +1420,15 @@ class IseoClient:
                     # Standard admin login
                     login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
                     await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                    await self._recv_sbt(timeout=10)
+                    try:
+                        login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+                    except asyncio.TimeoutError as exc:
+                        raise IseoConnectionError("No response to TLV_LOGIN") from exc
+                    if login_resp.get("status", 0) != _SBT_STATUS_OK:
+                        raise IseoAuthError(
+                            f"TLV_LOGIN failed with status={login_resp.get('status')} — "
+                            "UUID may not be registered on the lock"
+                        )
             else:
                 _LOGGER.debug("Skipping TLV_LOGIN (assume Master Mode/Pre-authorized)")
 
@@ -1372,7 +1440,7 @@ class IseoClient:
             await self._send_sbt(client, _OP_TLV_STORE_USER_BLOCK, user_tlv)
 
             try:
-                sbt = await self._recv_sbt(timeout=30)
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError(
                     "No response to register_pin_user (did you scan the Master Card?)"
@@ -1411,11 +1479,15 @@ class IseoClient:
             await client.start_notify(_S2C_UUID, self._on_notify)
             await self._handshake(client)
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
             await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            await self._recv_sbt(timeout=10)
+            try:
+                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+            except asyncio.TimeoutError as exc:
+                raise IseoConnectionError("No response to exchangeInfo") from exc
+            _LOGGER.debug("exchangeInfo response: %s", info_resp)
 
             if not skip_login:
                 if master_password:
@@ -1423,7 +1495,7 @@ class IseoClient:
                 else:
                     login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
                     await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                    await self._recv_sbt(timeout=10)
+                    await self._recv_sbt(timeout=_TIMEOUT_OP)
 
             # Read all users within the same connection to get raw inner TLV bytes.
             users_raw: list[tuple[int, bytes]] = []
@@ -1432,9 +1504,9 @@ class IseoClient:
                 req = struct.pack(">HH", fetch_start, 0xFFFF)
                 await self._send_sbt(client, _OP_TLV_READ_USER_BLOCK, req)
                 try:
-                    sbt = await self._recv_sbt(timeout=30)
-                except asyncio.TimeoutError:
-                    break
+                    sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
+                except asyncio.TimeoutError as exc:
+                    raise IseoConnectionError("Timed out reading user block from lock") from exc
                 if sbt.get("status", 0) != _SBT_STATUS_OK:
                     break
                 raw = sbt.get("payload", b"")
@@ -1443,7 +1515,7 @@ class IseoClient:
                 page_count = raw[0]
                 remaining = struct.unpack_from(">H", raw, 1)[0]
                 for outer_tag, inner_bytes in _parse_tlv_list(raw[3:]):
-                    if outer_tag in range(16, 22):
+                    if outer_tag in _USER_TYPE_RANGE:
                         users_raw.append((outer_tag, inner_bytes))
                 fetch_start += page_count
                 if remaining == 0 or page_count == 0:
@@ -1457,26 +1529,27 @@ class IseoClient:
                 raise ValueError(f"User {uuid_hex} (type {user_type}) not found on lock")
 
             # Rebuild inner TLV in SDK-defined tag order (SbtUserDataTlvCodec.java).
-            _TAG_ORDER = [0, 1, 2, 3, 4, 5, 7, 16, 8, 32, 9, 17, 20, 18, 19, 21, 22, 23]
             tags = {t: v for t, v in _parse_tlv_list(match)}
             if disabled:
-                now_local = time.localtime()
-                today_local_midnight = int(time.mktime(time.struct_time(
-                    (now_local.tm_year, now_local.tm_mon, now_local.tm_mday, 0, 0, 0, 0, 0, -1)
-                )))
+                # Compute local midnight as a Unix timestamp using the system timezone (e.g. CET).
+                # datetime.now().astimezone() correctly reflects the current DST offset, avoiding
+                # the tm_isdst=-1 ambiguity that time.mktime() has during DST transitions.
+                today_local_midnight = int(
+                    datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+                )
                 tags[16] = bytes([0x01]) + struct.pack(">II", today_local_midnight, today_local_midnight) + bytes(10)
             else:
                 # Use SDK SbtTpValidityRange.DISABLED (enabled=false, start=MIN=0, end=MIN=0).
                 # enabled=false means "no time restriction" to the lock firmware.
                 tags[16] = bytes([0x00]) + struct.pack(">II", 0, 0) + bytes(10)
-            tags = [(t, tags[t]) for t in _TAG_ORDER if t in tags]
+            tags = [(t, tags[t]) for t in _USER_TLV_TAG_ORDER if t in tags]
 
             inner = b"".join(_tlv(t, v) for t, v in tags)
             user_tlv = _tlv(user_type, inner)
 
             await self._send_sbt(client, _OP_TLV_STORE_USER_BLOCK, user_tlv)
             try:
-                sbt = await self._recv_sbt(timeout=30)
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("No response to set_user_disabled") from exc
 
@@ -1502,18 +1575,30 @@ class IseoClient:
             await self._handshake(client)
 
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
 
             # exchangeInfo
             await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            await self._recv_sbt(timeout=10)
+            try:
+                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+            except asyncio.TimeoutError as exc:
+                raise IseoConnectionError("No response to exchangeInfo") from exc
+            _LOGGER.debug("exchangeInfo response: %s", info_resp)
 
             # TLV_LOGIN
             login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
             await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-            await self._recv_sbt(timeout=10)
+            try:
+                login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+            except asyncio.TimeoutError as exc:
+                raise IseoConnectionError("No response to TLV_LOGIN") from exc
+            if login_resp.get("status", 0) != _SBT_STATUS_OK:
+                raise IseoAuthError(
+                    f"TLV_LOGIN failed with status={login_resp.get('status')} — "
+                    "UUID may not be registered on the lock"
+                )
 
             # OPCODE_TLV_LOG_NOTIFICATION_GET_UNREAD (66)
             # Payload is our SbtUserId (Tag 1) - this one stays Tag 1 as confirmed by SDK
@@ -1521,7 +1606,7 @@ class IseoClient:
             await self._send_sbt(client, _OP_TLV_LOG_NOTIF_GET_UNREAD, payload)
 
             try:
-                sbt = await self._recv_sbt(timeout=10)
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("No response to GET_UNREAD_LOGS") from exc
 
@@ -1541,11 +1626,22 @@ class IseoClient:
             for i in range(entry_count):
                 chunk = body[i * _LOG_ENTRY_SIZE : (i + 1) * _LOG_ENTRY_SIZE]
                 if len(chunk) < _LOG_ENTRY_SIZE:
+                    _LOGGER.warning(
+                        "gw_read_unread_logs: partial data at entry %d/%d "
+                        "(got %d bytes, expected %d) — remaining entries dropped",
+                        i, entry_count, len(chunk), _LOG_ENTRY_SIZE,
+                    )
                     break
                 try:
                     entries.append(LogEntry._from_bytes(chunk))
                 except Exception as exc:
                     _LOGGER.debug("Failed to decode log entry %d: %s", i, exc)
+
+            if more_flag:
+                _LOGGER.warning(
+                    "gw_read_unread_logs: lock reports additional unread entries beyond this page "
+                    "but opcode 66 does not support offset pagination — some entries may have been missed",
+                )
 
         _LOGGER.debug("gw_read_unread_logs: fetched %d entries", len(entries))
         return entries
@@ -1568,13 +1664,17 @@ class IseoClient:
             await self._handshake(client)
 
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
 
             # exchangeInfo
             await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            await self._recv_sbt(timeout=10)
+            try:
+                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+            except asyncio.TimeoutError as exc:
+                raise IseoConnectionError("No response to exchangeInfo") from exc
+            _LOGGER.debug("exchangeInfo response: %s", info_resp)
 
             # 1. Master Login (if provided)
             if master_password:
@@ -1585,7 +1685,7 @@ class IseoClient:
                 # The SDK shows performBtUserLogin before some master tasks.
                 login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
                 await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                await self._recv_sbt(timeout=10)
+                await self._recv_sbt(timeout=_TIMEOUT_OP)
 
             # 2. Register for log notifications (opcode 64)
             # Payload is our SbtUserId (Tag 1)
@@ -1593,7 +1693,7 @@ class IseoClient:
             await self._send_sbt(client, _OP_TLV_LOG_NOTIF_REGISTER, payload)
 
             try:
-                sbt = await self._recv_sbt(timeout=30)
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("No response to LOG_NOTIF_REGISTER (did you scan the Master Card?)") from exc
 
@@ -1609,7 +1709,7 @@ class IseoClient:
         skip_login: bool = False,
     ) -> None:
         """Erase ourselves from the whitelist."""
-        # Bluetooth users always use user_type 17 (outer tag).
+        # Bluetooth users always use USER_TYPE_BT (outer tag).
         await self.erase_user_by_uuid(
             self._uuid_bytes,
             17,
@@ -1646,13 +1746,17 @@ class IseoClient:
             await self._handshake(client)
 
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
 
             # exchangeInfo
             await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            await self._recv_sbt(timeout=10)
+            try:
+                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+            except asyncio.TimeoutError as exc:
+                raise IseoConnectionError("No response to exchangeInfo") from exc
+            _LOGGER.debug("exchangeInfo response: %s", info_resp)
 
             if not skip_login:
                 # 1. Master Login (only if password provided)
@@ -1662,24 +1766,32 @@ class IseoClient:
                     # Standard admin login
                     login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
                     await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                    await self._recv_sbt(timeout=10)
+                    try:
+                        login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+                    except asyncio.TimeoutError as exc:
+                        raise IseoConnectionError("No response to TLV_LOGIN") from exc
+                    if login_resp.get("status", 0) != _SBT_STATUS_OK:
+                        raise IseoAuthError(
+                            f"TLV_LOGIN failed with status={login_resp.get('status')} — "
+                            "UUID may not be registered on the lock"
+                        )
             else:
                 _LOGGER.debug("Skipping TLV_LOGIN (assume Master Mode/Pre-authorized)")
 
             # 2. Erase User (opcode 40)
-            if user_type == 17: # BLUETOOTH
+            if user_type == USER_TYPE_BT:
                 payload = _tlv_user_id(uuid_bytes, subtype or UserSubType.BT_SMARTPHONE)
-            elif user_type == 18: # PIN
+            elif user_type == USER_TYPE_PIN:
                 payload = _tlv_pin_user_id(uuid_bytes)
             else:
-                # Fallback for other types if we ever support them
-                payload = _tlv(user_type - 16, _tlv(1, uuid_bytes))
+                # Fallback for other types (RFID, Fingerprint, etc.): wrap UUID in outer type tag
+                payload = _tlv(user_type, _tlv(1, uuid_bytes))
 
             _LOGGER.debug("Sending TLV_ERASE_USER_BLOCK (opcode 40)")
             await self._send_sbt(client, _OP_TLV_ERASE_USER_BLOCK, payload)
 
             try:
-                sbt = await self._recv_sbt(timeout=30)
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("No response to erase_user (did you scan the Master Card?)") from exc
 
@@ -1706,13 +1818,17 @@ class IseoClient:
             await self._handshake(client)
 
             try:
-                await self._recv_csl(timeout=2)
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
 
             # exchangeInfo
             await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            await self._recv_sbt(timeout=10)
+            try:
+                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+            except asyncio.TimeoutError as exc:
+                raise IseoConnectionError("No response to exchangeInfo") from exc
+            _LOGGER.debug("exchangeInfo response: %s", info_resp)
 
             # 1. Master Login
             if master_password:
@@ -1723,7 +1839,7 @@ class IseoClient:
             await self._send_sbt(client, _OP_TLV_LOG_NOTIF_UNREGISTER, payload)
 
             try:
-                sbt = await self._recv_sbt(timeout=10)
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("No response to LOG_NOTIF_UNREGISTER") from exc
 
