@@ -199,10 +199,10 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
         )
 
     async def async_step_gw_register(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Step 1: Register the UUID as a Gateway (requires Master Card)."""
+        """Step 1: Register the Gateway and enable log notifications in a single master card scan."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            _LOGGER.debug("Starting Gateway registration for %s", self._address)
+            _LOGGER.debug("Starting Gateway setup for %s", self._address)
             client = IseoClient(
                 address=self._address,
                 uuid_bytes=bytes.fromhex(self._uuid_hex),
@@ -211,10 +211,10 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
                 ble_device=async_ble_device_from_address(self.hass, self._address, connectable=True),
             )
             try:
-                await client.register_user(name="Home Assistant")
-                return await self.async_step_gw_register_logs()
+                await client.setup_gateway(name="Home Assistant")
+                return await self.async_step_gw_fetch_users()
             except (IseoConnectionError, IseoAuthError) as exc:
-                _LOGGER.error("Gateway registration failed: %s", exc)
+                _LOGGER.error("Gateway setup failed: %s", exc)
                 errors["base"] = "auth_failed"
 
         return self.async_show_form(
@@ -223,37 +223,8 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
             errors=errors,
         )
 
-    async def async_step_gw_register_logs(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Step 2: Enable log notifications for the Gateway (requires Master Card)."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            _LOGGER.debug("Starting Gateway log registration for %s", self._address)
-            client = IseoClient(
-                address=self._address,
-                uuid_bytes=bytes.fromhex(self._uuid_hex),
-                identity_priv=self._gw_priv,
-                subtype=self._user_subtype,
-                ble_device=async_ble_device_from_address(self.hass, self._address, connectable=True),
-            )
-            try:
-                # Use the simplified client method which has a long internal timeout
-                await client.gw_register_log_notif()
-                return await self.async_step_gw_fetch_users()
-            except (IseoConnectionError, IseoAuthError) as exc:
-                _LOGGER.error("Gateway log registration failed: %s", exc)
-                errors["base"] = "auth_failed"
-            except Exception:
-                _LOGGER.exception("Unexpected error during Gateway log registration")
-                errors["base"] = "unknown"
-
-        return self.async_show_form(
-            step_id="gw_register_logs",
-            data_schema=vol.Schema({}),
-            errors=errors,
-        )
-
     async def async_step_gw_fetch_users(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Step 3: Fetch the user list from the lock (requires Master Card)."""
+        """Step 2: Fetch the user list from the lock (requires Master Card)."""
         errors: dict[str, str] = {}
         if user_input is not None:
             client = IseoClient(
@@ -264,8 +235,6 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
                 ble_device=async_ble_device_from_address(self.hass, self._address, connectable=True),
             )
             try:
-                # This will wait for master card - use skip_login=True because
-                # we assume the lock is already in Master Mode via physical card scan.
                 self._bt_users = await client.read_users(skip_login=True)
                 return await self.async_step_map_users()
             except (IseoConnectionError, IseoAuthError) as exc:

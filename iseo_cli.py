@@ -456,6 +456,9 @@ async def cmd_delete_user(args: argparse.Namespace) -> None:
         print("Aborted.")
         return
 
+    is_gateway = target_subtype == UserSubType.BT_GATEWAY and not args.password and not args.master
+    if is_gateway:
+        print("Gateway user detected — scan the Master Card on the lock when prompted …")
     print("Deleting user …")
     try:
         await client.erase_user_by_uuid(

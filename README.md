@@ -45,8 +45,8 @@ The integration uses a streamlined "Direct Master Registration" flow.
 1. **Add Integration**: Go to Settings > Devices & Services > Add Integration and search for "ISEO Argo BLE Lock".
 2. **Discovery**: Select your lock from the discovered Bluetooth devices.
 3. **Register Gateway**: When prompted, click **Submit**, then scan your physical **Master Card** on the lock within 30 seconds. The lock will blink green once the card is read successfully.
-4. **Enable Logs**: Click **Submit** again and scan the **Master Card** one more time within 30 seconds to enable real-time log notifications. The lock will blink green once the card is read successfully.
-5. **Map Users**: Finally, click **Submit** and scan the **Master Card** a third time within 30 seconds to download the lock's whitelist. The lock will blink green once the card is read successfully. Home Assistant will then let you link your physical credentials (RFID tags, PINs, phones) to your Home Assistant user accounts.
+4. **Fetch Users**: Click **Submit** again and scan the **Master Card** one more time within 30 seconds to download the lock's whitelist.
+5. **Map Users**: Link your physical credentials (RFID tags, PINs, phones) to your Home Assistant user accounts.
 
 ## 👥 User Mapping
 

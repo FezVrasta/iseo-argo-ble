@@ -1694,11 +1694,15 @@ class IseoClient:
             await self._exchange_info(client)
 
             if not skip_login:
-                # 1. Master Login (only if password provided)
+                # 1. Login
                 if master_password:
                     await self.master_login(client, master_password)
+                elif subtype == UserSubType.BT_GATEWAY:
+                    # Gateway users require master-level auth to delete.
+                    # Skip login — the lock will accept the erase after a Master Card scan.
+                    _LOGGER.debug("Gateway user deletion: skipping standard login, awaiting Master Card scan")
                 else:
-                    # Standard admin login
+                    # Standard admin login is sufficient for non-gateway users.
                     login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
                     await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
                     try:

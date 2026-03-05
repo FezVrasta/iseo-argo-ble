@@ -16,10 +16,6 @@
         "title": "Register Gateway",
         "description": "To register Home Assistant as a Gateway:\n\n⚠️ **Close the ARGO app before clicking Submit.**\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
       },
-      "gw_register_logs": {
-        "title": "Enable Gateway Logs",
-        "description": "The Gateway needs one more permission to receive real-time log updates:\n\n⚠️ **Close the ARGO app before clicking Submit.**\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
-      },
       "gw_fetch_users": {
         "title": "Fetch User List",
         "description": "To map your Argo users to Home Assistant accounts, Home Assistant needs to download the lock's whitelist.\n\n⚠️ **Close the ARGO app before clicking Submit.**\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
