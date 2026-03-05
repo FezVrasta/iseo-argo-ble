@@ -1506,9 +1506,9 @@ class IseoClient:
                 # Use SDK SbtTpValidityRange.DISABLED (enabled=false, start=MIN=0, end=MIN=0).
                 # enabled=false means "no time restriction" to the lock firmware.
                 tags[16] = bytes([0x00]) + struct.pack(">II", 0, 0) + bytes(10)
-            tags = [(t, tags[t]) for t in _USER_TLV_TAG_ORDER if t in tags]
 
-            inner = b"".join(_tlv(t, v) for t, v in tags)
+            ordered_tags = [(t, tags[t]) for t in _USER_TLV_TAG_ORDER if t in tags]
+            inner = b"".join(_tlv(t, v) for t, v in ordered_tags)
             user_tlv = _tlv(user_type, inner)
 
             await self._send_sbt(client, _OP_TLV_STORE_USER_BLOCK, user_tlv)
