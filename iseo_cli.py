@@ -252,10 +252,11 @@ async def cmd_register_gateway(args: argparse.Namespace) -> None:
         subtype=UserSubType.BT_GATEWAY,
     )
 
-    print(f"Connecting to {address} to register Gateway …")
+    print(f"Connecting to {address} to perform full Gateway setup …")
+    print("Hint: When prompted by the lock (LED blinking), scan your physical Master Card.")
 
     try:
-        await client.register_user(
+        await client.setup_gateway(
             master_password=args.password,
             name=args.name,
             connect_timeout=args.timeout,
@@ -263,9 +264,9 @@ async def cmd_register_gateway(args: argparse.Namespace) -> None:
     except MasterAuthError as exc:
         sys.exit(f"Master login failed: {exc}. Check your admin password.")
     except Exception as exc:
-        sys.exit(f"Registration failed: {exc}")
+        sys.exit(f"Setup failed: {exc}")
 
-    print(f"Success! Identity {uuid_bytes.hex().upper()} registered as Gateway '{args.name}'.")
+    print(f"Success! Identity {uuid_bytes.hex().upper()} registered as Gateway '{args.name}' with log notifications enabled.")
     print("You can now use:  iseo_cli.py gw-open")
 
 

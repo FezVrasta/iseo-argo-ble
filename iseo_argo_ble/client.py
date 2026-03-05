@@ -881,6 +881,16 @@ class IseoClient:
         self._pl_key, self._sig_key = _derive_data_keys(kb0, kb2, shs_pl, shs_sig)
         _LOGGER.debug("Handshake complete — session %d", self._sid)
 
+    async def _exchange_info(self, client: BleakClient) -> None:
+        """Announce FL_9 feature level to the lock (exchangeInfo)."""
+        _LOGGER.debug("Sending exchangeInfo (TLV_INFO with FL_9 payload)")
+        await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
+        try:
+            info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+        except asyncio.TimeoutError as exc:
+            raise IseoConnectionError("No response to exchangeInfo") from exc
+        _LOGGER.debug("exchangeInfo response: %s", info_resp)
+
     # ── Public API ─────────────────────────────────────────────────────────
     async def open_lock(self, connect_timeout: float = 20.0) -> None:
         """
@@ -904,8 +914,6 @@ class IseoClient:
             pub_key = _pub_to_bytes(self._identity_priv)
 
             # Standard users use WHITELIST_CREDENTIAL (0).
-            # If registered as Gateway, the lock might expect Mode 2 or 0.
-            # We'll stick to 0 for standard opening.
             val_mode = 0
 
             payload = (
@@ -973,13 +981,6 @@ class IseoClient:
     async def read_state(self, connect_timeout: float = 20.0) -> LockState:
         """
         Connect to the lock, send TLV_INFO (opcode 32), read door state, disconnect.
-
-        Returns LockState with door_closed=True/False, or door_closed=None if
-        the lock doesn't advertise door-contact capability (bit 7 of Tag 4).
-
-        Raises:
-            IseoConnectionError: BLE or handshake failure.
-            IseoAuthError:       Lock returned a non-zero status.
         """
         _LOGGER.debug("Reading state from %s", self._address)
         async with self._connected_client(connect_timeout) as client:
@@ -1009,12 +1010,9 @@ class IseoClient:
             tags = _parse_tlv(sbt.get("payload", b""))
             _LOGGER.debug("TLV_INFO tags: %s", {k: v.hex() for k, v in tags.items()})
 
-            # Tag 2: FirmwareInfo — 8-byte ASCII, chars 0-4 = name, 5-7 = version.
             fw_bytes = tags.get(2, b"")
             firmware_info: str | None = fw_bytes.decode("ascii", errors="replace") if len(fw_bytes) == 8 else None
 
-            # Tag 5: SystemState — parse battery level (bits 7-5) regardless of
-            # whether the door sensor is supported; door_closed follows after.
             state_bytes = tags.get(5, b"")
             system_state = struct.unpack_from(">H", state_bytes)[0] if len(state_bytes) >= 2 else None
             battery_level: int | None = (
@@ -1032,12 +1030,6 @@ class IseoClient:
                 return LockState(door_closed=None, firmware_info=firmware_info, battery_level=battery_level)
 
             door_closed = bool(system_state & _STATE_DOOR_CLOSED)
-            _LOGGER.debug(
-                "SystemState=0x%04x  door_closed=%s  battery_level=%s",
-                system_state,
-                door_closed,
-                battery_level,
-            )
             return LockState(door_closed=door_closed, firmware_info=firmware_info, battery_level=battery_level)
 
     async def read_logs(
@@ -1049,9 +1041,6 @@ class IseoClient:
     ) -> list[LogEntry]:
         """
         Read access-log entries from the lock (opcode 23, READ_LOG_INFO).
-
-        If skip_login is False, requires admin rights.
-        If skip_login is True, assumes lock is already in Master Mode.
         """
         _LOGGER.debug(
             "Reading logs from %s (start=%d, max=%d, skip_login=%s)", self._address, start, max_entries, skip_login
@@ -1071,39 +1060,18 @@ class IseoClient:
             except asyncio.TimeoutError:
                 pass
 
-            # ── exchangeInfo: announce FL_9 so the lock enables FL_3 commands ──
-            # The Argo app always calls TLV_INFO with the SbtInfoClient payload
-            # (feature level FL_9) right after the handshake. Without it the
-            # lock treats the session as FL_0 and returns CMD_UNSUPPORTED (3)
-            # for FL_3 commands like TLV_LOGIN.
-            _LOGGER.debug("Sending exchangeInfo (TLV_INFO with FL_9 payload)")
-            await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            try:
-                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to exchangeInfo") from exc
-            _LOGGER.debug("exchangeInfo response: %s", info_resp)
+            await self._exchange_info(client)
 
             if not skip_login:
-                # TLV_LOGIN — authenticate as admin BT user
                 login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
-                _LOGGER.debug(
-                    "Sending TLV_LOGIN (opcode 41) for UUID %s (subtype=%d)", self._uuid_bytes.hex(), self._subtype
-                )
                 await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-
                 try:
                     login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
                 except asyncio.TimeoutError as exc:
                     raise IseoConnectionError("No response to TLV_LOGIN") from exc
 
-                login_status = login_resp.get("status", 0)
-                if login_status != _SBT_STATUS_OK:
-                    raise IseoAuthError(
-                        f"TLV_LOGIN failed with status={login_status} — "
-                        "ensure this UUID has admin rights in the Argo app"
-                    )
-                _LOGGER.debug("TLV_LOGIN accepted")
+                if login_resp.get("status", 0) != _SBT_STATUS_OK:
+                    raise IseoAuthError(f"TLV_LOGIN failed with status={login_resp.get('status')}")
             else:
                 _LOGGER.debug("Skipping TLV_LOGIN (assume Master Mode/Pre-authorized)")
 
@@ -1123,26 +1091,21 @@ class IseoClient:
 
                 status = sbt.get("status", 0)
                 if status in _LOG_STATUS_EOF:
-                    _LOGGER.debug("READ_LOG EOF (status=%d)", status)
                     break
                 if status != _SBT_STATUS_OK:
                     raise IseoAuthError(f"Lock returned status={status} for READ_LOG")
 
                 raw = sbt.get("payload", b"")
                 if len(raw) < 3:
-                    _LOGGER.debug("READ_LOG response too short (%dB)", len(raw))
                     break
 
                 entry_count, more_flag = struct.unpack_from(">HB", raw)
                 more = bool(more_flag)
                 body = raw[3:]
 
-                _LOGGER.debug("READ_LOG page: index=%d count=%d more=%s", index, entry_count, more)
-
                 for i in range(entry_count):
                     chunk = body[i * _LOG_ENTRY_SIZE : (i + 1) * _LOG_ENTRY_SIZE]
                     if len(chunk) < _LOG_ENTRY_SIZE:
-                        _LOGGER.debug("Truncated log entry at i=%d, stopping", i)
                         more = False
                         break
                     try:
@@ -1152,9 +1115,8 @@ class IseoClient:
 
                 index += entry_count
                 remaining -= entry_count
-
                 if entry_count == 0:
-                    break  # lock returned no entries despite more=True
+                    break
 
         _LOGGER.debug("read_logs: fetched %d entries", len(entries))
         return entries
@@ -1162,9 +1124,6 @@ class IseoClient:
     async def read_users(self, connect_timeout: float = 20.0, skip_login: bool = False) -> list[UserEntry]:
         """
         Read all users from the lock whitelist (opcode 36, TLV_READ_USER_BLOCK).
-
-        If skip_login is False, requires admin rights.
-        If skip_login is True, assumes lock is already in Master Mode.
         """
         _LOGGER.debug("Reading users from %s (skip_login=%s)", self._address, skip_login)
         entries: list[UserEntry] = []
@@ -1182,15 +1141,9 @@ class IseoClient:
             except asyncio.TimeoutError:
                 pass
 
-            # exchangeInfo — announce FL_9 so the lock enables FL_3+ commands
-            await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            try:
-                await self._recv_sbt(timeout=_TIMEOUT_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to exchangeInfo") from exc
+            await self._exchange_info(client)
 
             if not skip_login:
-                # TLV_LOGIN — authenticate as admin BT user (Tag 17)
                 login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
                 await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
                 try:
@@ -1199,18 +1152,10 @@ class IseoClient:
                     raise IseoConnectionError("No response to TLV_LOGIN") from exc
 
                 if login_resp.get("status", 0) != _SBT_STATUS_OK:
-                    raise IseoAuthError(
-                        f"TLV_LOGIN failed with status={login_resp.get('status')} — "
-                        "ensure this UUID has admin rights in the Argo app"
-                    )
+                    raise IseoAuthError(f"TLV_LOGIN failed with status={login_resp.get('status')}")
             else:
                 _LOGGER.debug("Skipping TLV_LOGIN (assume Master Mode/Pre-authorized)")
 
-            # Paginated user block read
-            # Request:  [start UINT16 BE][max_count UINT16 BE]
-            # Response: [count UINT8][remaining UINT16 BE][TLV array]
-            # Each TLV: outer tag = user type (16-21), value = inner TLV bytes
-            # Inner TLVs: tag 1 = UUID (raw bytes), tag 2 = description (UTF-8)
             fetch_start = 0
             fetch_max = 0xFFFF
             first_block = True
@@ -1223,14 +1168,10 @@ class IseoClient:
                     sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP if first_block else _TIMEOUT_OP)
                     first_block = False
                 except asyncio.TimeoutError as exc:
-                    raise IseoConnectionError(
-                        "No response to TLV_READ_USER_BLOCK (did you scan the Master Card?)"
-                    ) from exc
+                    raise IseoConnectionError("No response to TLV_READ_USER_BLOCK") from exc
 
                 status = sbt.get("status", 0)
                 if status != _SBT_STATUS_OK:
-                    # Non-zero on first call most likely means empty whitelist
-                    _LOGGER.debug("TLV_READ_USER_BLOCK status=%d (done)", status)
                     break
 
                 raw = sbt.get("payload", b"")
@@ -1243,17 +1184,13 @@ class IseoClient:
 
                 for outer_tag, inner_bytes in _parse_tlv_list(tlv_data):
                     if outer_tag not in _USER_TYPE_RANGE:
-                        continue  # not a recognised user-type tag
+                        continue
                     inner = _parse_tlv(inner_bytes)
                     uuid_raw = inner.get(1, b"")
                     name_raw = inner.get(2, b"")
-                    # Tag 0 is SubType (e.g. 16=Smartphone, 17=Gateway)
                     subtype_raw = inner.get(0, b"")
                     inner_subtype = subtype_raw[0] if subtype_raw else None
 
-                    # Tag 16 is SbtTimeProfile. A user is "disabled" (by our disable command)
-                    # only when validity is enabled, start == end, and both are in the past.
-                    # A regular expired range (start < end) is not treated as disabled.
                     disabled = False
                     tp_raw = inner.get(16, b"")
                     if len(tp_raw) >= 9:
@@ -1275,7 +1212,6 @@ class IseoClient:
 
                 fetch_start += page_count
                 fetch_max = remaining
-
                 if remaining == 0 or page_count == 0:
                     break
 
@@ -1287,13 +1223,6 @@ class IseoClient:
         Authenticate using the Master Password (OEM Login).
         Must be called within a connection context after handshake.
         """
-        # Master login is TLV_LOGIN (opcode 41) but with tag 0x00 (Password)
-        # instead of a user structure.
-        # Actually, looking at DefaultSbtClientFl2MasterCmdHandler.java:
-        # OPCODE_TLV_LOGIN is used for performBtUserLogin.
-        # performOemLogin uses oemLoginCmdSpec, which is also opcode 41!
-        # It just sends SbtOemLoginPwd directly as payload.
-
         pwd_bytes = password.encode("utf-8")
         _LOGGER.debug("Sending Master Login (opcode 41)")
         await self._send_sbt(client, _OP_TLV_LOGIN, pwd_bytes)
@@ -1306,6 +1235,89 @@ class IseoClient:
         if sbt.get("status") != _SBT_STATUS_OK:
             raise MasterAuthError(f"Master login failed (status={sbt.get('status')})")
         _LOGGER.debug("Master login accepted")
+
+    async def _register_user_internal(self, client: BleakClient, name: str) -> None:
+        """Internal logic to register ourselves in the whitelist."""
+        pub_key = _pub_to_bytes(self._identity_priv)
+
+        inner = (
+            _tlv(0, bytes([self._subtype]))
+            + _tlv(1, self._uuid_bytes)
+            + _tlv(2, name.encode("utf-8"))
+            # Tag 3: Options (MasterLogin + Privacy + Passage)
+            + _tlv(3, bytes([0x70]))
+            # Tag 4: CreationTs
+            + _tlv(4, struct.pack(">I", int(time.time())))
+            + _tlv(32, pub_key)
+        )
+        user_tlv = _tlv(17, inner)
+
+        # Opcode 38 (STORE_USER_BLOCK) expects a raw TLV block (no item count).
+        _LOGGER.debug("Sending TLV_STORE_USER_BLOCK (opcode 38)")
+        await self._send_sbt(client, _OP_TLV_STORE_USER_BLOCK, user_tlv)
+
+        try:
+            sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
+        except asyncio.TimeoutError as exc:
+            raise IseoConnectionError("No response to register_user (did you scan the Master Card?)") from exc
+
+        status = sbt.get("status", 0)
+        if status == 68:
+            raise IseoAuthError("Invalid user data: The lock rejected this identity payload.")
+        if status != _SBT_STATUS_OK:
+            raise IseoAuthError(f"User registration failed (status={status})")
+
+    async def _register_log_notif_internal(self, client: BleakClient) -> None:
+        """Internal logic to register for log notifications."""
+        # Register for log notifications (opcode 64)
+        # Payload is our SbtUserId (Tag 1)
+        payload = _tlv_user_id(self._uuid_bytes, self._subtype)
+        await self._send_sbt(client, _OP_TLV_LOG_NOTIF_REGISTER, payload)
+
+        try:
+            sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
+        except asyncio.TimeoutError as exc:
+            raise IseoConnectionError("No response to LOG_NOTIF_REGISTER (did you scan the Master Card?)") from exc
+
+        if sbt.get("status") != _SBT_STATUS_OK:
+            raise IseoAuthError(f"Log notification registration failed (status={sbt.get('status')})")
+
+    async def setup_gateway(
+        self,
+        master_password: str | None = None,
+        name: str = "Home Assistant",
+        connect_timeout: float = 20.0,
+    ) -> None:
+        """
+        Connect to the lock and perform full Gateway setup in a single session.
+        Registers the user and enables log notifications.
+        Requires scanning the Master Card once (or master_password).
+        """
+        if self._subtype != UserSubType.BT_GATEWAY:
+            raise ValueError("setup_gateway requires BT_GATEWAY subtype")
+
+        _LOGGER.debug("Starting full Gateway setup on %s", self._address)
+        async with self._connected_client(connect_timeout) as client:
+            await client.start_notify(_S2C_UUID, self._on_notify)
+            await self._handshake(client)
+
+            try:
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
+            except asyncio.TimeoutError:
+                pass
+
+            await self._exchange_info(client)
+
+            if master_password:
+                await self.master_login(client, master_password)
+
+            _LOGGER.debug("Step 1/2: Registering user")
+            await self._register_user_internal(client, name)
+
+            _LOGGER.debug("Step 2/2: Enabling log notifications")
+            await self._register_log_notif_internal(client)
+
+        _LOGGER.info("Gateway setup completed successfully (UUID=%s)", self._uuid_bytes.hex())
 
     async def register_user(
         self,
@@ -1327,49 +1339,12 @@ class IseoClient:
             except asyncio.TimeoutError:
                 pass
 
-            # exchangeInfo
-            await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            try:
-                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to exchangeInfo") from exc
-            _LOGGER.debug("exchangeInfo response: %s", info_resp)
+            await self._exchange_info(client)
 
-            # 1. Master Login (only if password provided)
             if master_password:
                 await self.master_login(client, master_password)
 
-            # 2. Store User (opcode 38)
-            # Payload is a TLV Array. SbtUserDataTlvCodec encodes SbtUser.
-            # Tag 17 (Bluetooth), inner tags: 0 (SubType), 1 (UUID), 2 (Name), 32 (PubKey)
-            pub_key = _pub_to_bytes(self._identity_priv)
-
-            inner = (
-                _tlv(0, bytes([self._subtype]))
-                + _tlv(1, self._uuid_bytes)
-                + _tlv(2, name.encode("utf-8"))
-                # Tag 3: Options (MasterLogin + Privacy + Passage)
-                + _tlv(3, bytes([0x70]))
-                # Tag 4: CreationTs
-                + _tlv(4, struct.pack(">I", int(time.time())))
-                + _tlv(32, pub_key)
-            )
-            user_tlv = _tlv(17, inner)
-
-            # Opcode 38 (STORE_USER_BLOCK) expects a raw TLV block (no item count).
-            _LOGGER.debug("Sending TLV_STORE_USER_BLOCK (opcode 38)")
-            await self._send_sbt(client, _OP_TLV_STORE_USER_BLOCK, user_tlv)
-
-            try:
-                sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to register_user (did you scan the Master Card?)") from exc
-
-            status = sbt.get("status", 0)
-            if status == 68:
-                raise IseoAuthError("Invalid user data: The lock rejected this identity payload.")
-            if status != _SBT_STATUS_OK:
-                raise IseoAuthError(f"User registration failed (status={status})")
+            await self._register_user_internal(client, name)
 
         _LOGGER.info("User registered successfully (UUID=%s, subtype=%d)", self._uuid_bytes.hex(), self._subtype)
 
@@ -1404,13 +1379,7 @@ class IseoClient:
             except asyncio.TimeoutError:
                 pass
 
-            # exchangeInfo
-            await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            try:
-                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to exchangeInfo") from exc
-            _LOGGER.debug("exchangeInfo response: %s", info_resp)
+            await self._exchange_info(client)
 
             if not skip_login:
                 # 1. Master Login (only if password provided)
@@ -1482,12 +1451,7 @@ class IseoClient:
                 await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
             except asyncio.TimeoutError:
                 pass
-            await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            try:
-                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to exchangeInfo") from exc
-            _LOGGER.debug("exchangeInfo response: %s", info_resp)
+            await self._exchange_info(client)
 
             if not skip_login:
                 if master_password:
@@ -1579,13 +1543,7 @@ class IseoClient:
             except asyncio.TimeoutError:
                 pass
 
-            # exchangeInfo
-            await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            try:
-                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to exchangeInfo") from exc
-            _LOGGER.debug("exchangeInfo response: %s", info_resp)
+            await self._exchange_info(client)
 
             # TLV_LOGIN
             login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
@@ -1668,13 +1626,7 @@ class IseoClient:
             except asyncio.TimeoutError:
                 pass
 
-            # exchangeInfo
-            await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            try:
-                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to exchangeInfo") from exc
-            _LOGGER.debug("exchangeInfo response: %s", info_resp)
+            await self._exchange_info(client)
 
             # 1. Master Login (if provided)
             if master_password:
@@ -1687,18 +1639,7 @@ class IseoClient:
                 await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
                 await self._recv_sbt(timeout=_TIMEOUT_OP)
 
-            # 2. Register for log notifications (opcode 64)
-            # Payload is our SbtUserId (Tag 1)
-            payload = _tlv_user_id(self._uuid_bytes, self._subtype)
-            await self._send_sbt(client, _OP_TLV_LOG_NOTIF_REGISTER, payload)
-
-            try:
-                sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to LOG_NOTIF_REGISTER (did you scan the Master Card?)") from exc
-
-            if sbt.get("status") != _SBT_STATUS_OK:
-                raise IseoAuthError(f"Log notification registration failed (status={sbt.get('status')})")
+            await self._register_log_notif_internal(client)
 
         _LOGGER.info("Gateway registered for log notifications (UUID=%s)", self._uuid_bytes.hex())
 
@@ -1750,13 +1691,7 @@ class IseoClient:
             except asyncio.TimeoutError:
                 pass
 
-            # exchangeInfo
-            await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            try:
-                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to exchangeInfo") from exc
-            _LOGGER.debug("exchangeInfo response: %s", info_resp)
+            await self._exchange_info(client)
 
             if not skip_login:
                 # 1. Master Login (only if password provided)
@@ -1822,13 +1757,7 @@ class IseoClient:
             except asyncio.TimeoutError:
                 pass
 
-            # exchangeInfo
-            await self._send_sbt(client, _OP_TLV_INFO, _INFO_CLIENT_PAYLOAD)
-            try:
-                info_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to exchangeInfo") from exc
-            _LOGGER.debug("exchangeInfo response: %s", info_resp)
+            await self._exchange_info(client)
 
             # 1. Master Login
             if master_password:
