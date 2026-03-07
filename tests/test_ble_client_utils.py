@@ -1,30 +1,35 @@
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import pytest
 import struct
 from datetime import datetime, timezone
+
+import pytest
+
 from iseo_argo_ble.client import (
-    is_iseo_advertisement,
-    _slip_encode,
-    _slip_decode,
+    _SBT_PREAMBLE,
+    LogEntry,
     _crc8,
     _crc16,
-    _sbt_checksum,
-    _tlv,
+    _csl_header,
+    _csl_payload_dec,
+    _csl_payload_enc,
+    _parse_csl_header,
+    _parse_sbt,
     _parse_tlv,
     _parse_tlv_list,
-    bcd_encode_pin,
+    _sbt_checksum,
+    _slip_decode,
+    _slip_encode,
+    _tlv,
     battery_enum_to_pct,
-    LogEntry,
-    _csl_header,
-    _parse_csl_header,
-    _csl_payload_enc,
-    _csl_payload_dec,
-    _parse_sbt,
-    _SBT_PREAMBLE,
+    bcd_encode_pin,
+    is_iseo_advertisement,
+    parse_iseo_advertisement,
 )
+
 
 def test_is_iseo_advertisement():
     assert is_iseo_advertisement(["0000f001-0000-1000-8000-00805f9b34fb"]) is True
@@ -32,6 +37,34 @@ def test_is_iseo_advertisement():
     assert is_iseo_advertisement(["0000f040-0000-1000-8000-00805f9b34fb"]) is False
     assert is_iseo_advertisement(["0000180f-0000-1000-8000-00805f9b34fb"]) is False
     assert is_iseo_advertisement(["random-uuid"]) is False
+
+def test_parse_iseo_advertisement():
+    # marker at index 0, state at index 3
+    # state value: 0xE000 | battery(2 << 5) | door_closed(0x0800) = 0xE000 | 0x0040 | 0x0800 = 0xE840
+    uuids = [
+        "0000f001-0000-1000-8000-00805f9b34fb",
+        "00001111-0000-1000-8000-00805f9b34fb",
+        "00002222-0000-1000-8000-00805f9b34fb",
+        "0000e840-0000-1000-8000-00805f9b34fb",
+    ]
+    state = parse_iseo_advertisement(uuids)
+    assert state is not None
+    assert state.door_closed is True
+    assert state.battery_level == 2 # OK
+
+    # Test open door, low battery (3)
+    # state: 0xE000 | (3 << 5) = 0xE060
+    uuids[3] = "0000e060-0000-1000-8000-00805f9b34fb"
+    state = parse_iseo_advertisement(uuids)
+    assert state.door_closed is False
+    assert state.battery_level == 3 # LOW
+
+    # Test invalid state prefix
+    uuids[3] = "0000d000-0000-1000-8000-00805f9b34fb"
+    assert parse_iseo_advertisement(uuids) is None
+
+    # Test missing state (list too short)
+    assert parse_iseo_advertisement(uuids[:3]) is None
 
 def test_slip_encode_decode():
     data = b"\x01\x02\xc0\x03\xdb\x04"
@@ -97,7 +130,7 @@ def test_log_entry_decode():
     data[66] = 80 # battery
     ts = 1709550000 # 2024-03-04 11:00:00 UTC
     struct.pack_into(">I", data, 67, ts)
-    
+
     entry = LogEntry._from_bytes(bytes(data))
     assert entry.event_code == 42
     assert entry.extra_description == "extra"
@@ -135,7 +168,7 @@ def test_parse_sbt_lock_resp():
     sbt_data[8] = 42 # opcode
     sbt_data[9] = 0 # status
     sbt_data[13:] = payload
-    
+
     parsed = _parse_sbt(bytes(sbt_data))
     assert parsed["src"] == 1
     assert parsed["opcode"] == 42
@@ -143,7 +176,7 @@ def test_parse_sbt_lock_resp():
     assert parsed["payload"] == payload
 
 def test_tlv_user_bt():
-    from iseo_argo_ble.client import _tlv_user_bt, UserSubType
+    from iseo_argo_ble.client import UserSubType, _tlv_user_bt
     uuid = b"U" * 16
     pub = b"K" * 56
     tlv_data = _tlv_user_bt(uuid, pub, UserSubType.BT_GATEWAY)

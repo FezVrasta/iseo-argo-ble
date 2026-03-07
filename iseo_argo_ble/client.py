@@ -68,6 +68,58 @@ def is_iseo_advertisement(service_uuids: list[str]) -> bool:
     return False
 
 
+def parse_iseo_advertisement(service_uuids: list[str]) -> LockState | None:
+    """Parse an ISEO advertisement to extract the lock state.
+
+    The lock encodes its state into the 16-bit Service UUIDs list.
+    One UUID in the list starts with 0xF000 (device type).
+    The system state is at index 3 relative to the F000 marker.
+    The state UUID has a 0xE000 prefix (61440 & 0xF000 == 0xE000? No, check codec).
+    Codec check: (val & 0xF000) == 0xE000 (57344).
+    """
+    shorts = []
+    for uuid in service_uuids:
+        lower = uuid.lower()
+        if lower.endswith(_BT_BASE_SUFFIX):
+            prefix = lower.split("-")[0]
+            try:
+                shorts.append(int(prefix, 16) & 0xFFFF)
+            except ValueError:
+                continue
+
+    # Find the F0xx marker index
+    marker_idx = None
+    for i, val in enumerate(shorts):
+        if (val & 0xFFC0) == 0xF000:
+            marker_idx = i
+            break
+
+    if marker_idx is None:
+        return None
+
+    # System state is at index +3 (DefaultSbtBtAdvertisingParser.java)
+    state_idx = marker_idx + 3
+    if state_idx >= len(shorts):
+        return None
+
+    state_val = shorts[state_idx]
+    # SbtDeviceSystemStateCodec check: (val & 0xF000) == 0xE000 (57344)
+    if (state_val & 0xF000) != 0xE000:
+        return None
+
+    door_closed = bool(state_val & _STATE_DOOR_CLOSED)
+    battery_level = (state_val >> _STATE_BATTERY_SHIFT) & _STATE_BATTERY_MASK
+
+    # Optional: extract more fields if needed
+    # bit 4 (16) = Privacy Mode
+    # bit 3 (8) = Passage Mode Normal
+    # bit 8 (256) = Passage Mode Light
+    return LockState(
+        door_closed=door_closed,
+        battery_level=battery_level,
+    )
+
+
 # ── Session key material ──────────────────────────────────────────────────────
 _M = bytes(
     [
@@ -1493,7 +1545,7 @@ class IseoClient:
                 raise ValueError(f"User {uuid_hex} (type {user_type}) not found on lock")
 
             # Rebuild inner TLV in SDK-defined tag order (SbtUserDataTlvCodec.java).
-            tags = {t: v for t, v in _parse_tlv_list(match)}
+            tags = dict(_parse_tlv_list(match))
             if disabled:
                 # Compute local midnight as a Unix timestamp using the system timezone (e.g. CET).
                 # datetime.now().astimezone() correctly reflects the current DST offset, avoiding

@@ -16,6 +16,7 @@ from homeassistant.helpers import entity_platform
 from homeassistant.helpers.typing import ConfigType
 
 from iseo_argo_ble import IseoAuthError, IseoClient, IseoConnectionError, UserSubType
+
 from .const import (
     CONF_ADDRESS,
     CONF_PRIV_SCALAR,
@@ -25,7 +26,7 @@ from .const import (
     DOMAIN,
     PLATFORMS,
 )
-from .coordinator import IseoLogCoordinator
+from .coordinator import IseoAdvertisementCoordinator, IseoLogCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -125,7 +126,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = IseoLogCoordinator(hass, entry, uuid_bytes, priv, subtype)
     await coordinator.async_config_entry_first_refresh()  # initial poll
 
-    hass.data[DOMAIN][entry.entry_id] = {"coordinator": coordinator, "priv": priv}
+    adv_coordinator = IseoAdvertisementCoordinator(hass, entry.data[CONF_ADDRESS])
+    await adv_coordinator.async_setup()
+
+    hass.data[DOMAIN][entry.entry_id] = {
+        "coordinator": coordinator,
+        "adv_coordinator": adv_coordinator,
+        "priv": priv,
+    }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -133,7 +141,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry. Best-effort unregister from lock if it's a Gateway."""
-    # 1. Attempt best-effort cleanup on the physical lock
+    # 1. Stop advertisement listener
+    entry_data = hass.data[DOMAIN].get(entry.entry_id)
+    if entry_data and (adv_coord := entry_data.get("adv_coordinator")):
+        adv_coord.async_stop()
+
+    # 2. Attempt best-effort cleanup on the physical lock
     try:
         priv = hass.data[DOMAIN][entry.entry_id]["priv"]
         address = entry.data[CONF_ADDRESS]

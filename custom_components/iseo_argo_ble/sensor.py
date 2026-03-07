@@ -11,8 +11,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from iseo_argo_ble import LogEntry, battery_enum_to_pct
+
 from .const import CONF_ADDRESS, DOMAIN
-from .coordinator import IseoLogCoordinator, _resolve_actor, entry_message, event_name
+from .coordinator import IseoAdvertisementCoordinator, IseoLogCoordinator, _resolve_actor, entry_message, event_name
 
 
 async def async_setup_entry(
@@ -21,10 +22,11 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: IseoLogCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    adv_coordinator: IseoAdvertisementCoordinator = hass.data[DOMAIN][entry.entry_id]["adv_coordinator"]
     async_add_entities(
         [
             IseoLastEventSensor(coordinator, entry),
-            IseoBatterySensor(coordinator, entry),
+            IseoBatterySensor(adv_coordinator, coordinator, entry),
         ]
     )
 
@@ -65,9 +67,8 @@ class IseoLastEventSensor(CoordinatorEntity[IseoLogCoordinator], SensorEntity):
             "battery": entry.battery,
         }
 
-
-class IseoBatterySensor(CoordinatorEntity[IseoLogCoordinator], SensorEntity):
-    """Shows battery level reported in the most recent access-log entry."""
+class IseoBatterySensor(CoordinatorEntity[IseoAdvertisementCoordinator], SensorEntity):
+    """Shows battery level reported in BLE advertisements or logs."""
 
     _attr_has_entity_name = True
     _attr_translation_key = "battery"
@@ -75,8 +76,14 @@ class IseoBatterySensor(CoordinatorEntity[IseoLogCoordinator], SensorEntity):
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator: IseoLogCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        coordinator: IseoAdvertisementCoordinator,
+        log_coordinator: IseoLogCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
         super().__init__(coordinator)
+        self._log_coordinator = log_coordinator
         self._attr_unique_id = f"{entry.data[CONF_ADDRESS].replace(':', '').lower()}_battery"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -84,5 +91,11 @@ class IseoBatterySensor(CoordinatorEntity[IseoLogCoordinator], SensorEntity):
 
     @property
     def native_value(self) -> int | None:
-        entry: LogEntry | None = self.coordinator.data
+        # Prefer real-time data from advertisements
+        if self.coordinator.data is not None and self.coordinator.data.battery_level is not None:
+            return battery_enum_to_pct(self.coordinator.data.battery_level)
+
+        # Fallback to the last log entry if no advertisement has been seen yet
+        entry: LogEntry | None = self._log_coordinator.data
         return battery_enum_to_pct(entry.battery) if entry is not None else None
+

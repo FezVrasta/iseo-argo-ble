@@ -45,6 +45,43 @@ Application (TLV commands)
 
 ---
 
+## Bluetooth Discovery
+
+### MAC Address Prefix
+ISEO devices use the OUI prefix **`00:15:42`** (assigned to Iseo Serrature s.p.a.).
+
+### Advertisement Data (16-bit Service UUIDs)
+ISEO locks encode real-time status and device information directly into the **16-bit Service UUIDs** list (Ad Type `0x03`). The app uses `DefaultSbtBtAdvertisingParser` to locate a "marker" UUID and then parses relative offsets.
+
+**Marker UUID Filter:** `(uuid & 0xFFC0) == 0xF000`
+Any device advertising a UUID in the range `0xF000` to `0xF03F` is considered an ISEO lock.
+
+#### UUID Field Mapping (Offsets from Marker)
+| Offset | Field | Description |
+|--------|-------|-------------|
+| 0 | **Device Type** | Encodes the hardware model (e.g., `0xF000` = LIBRA, `0xF002` = ARIES). |
+| 2 | **Protocol Info** | Versioning and capability flags for the SBT protocol. |
+| 3 | **System State** | Real-time status (prefix `0xE000`). See bit-packing below. |
+| 4 | **Extended State** | Additional flags for newer hardware (e.g., relay status). |
+
+### Device System State (Prefix `0xE000`)
+The UUID at **Offset 3** (typically starting with `0xE`) is a bit-packed 16-bit integer representing the lock's current physical state:
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| 15–12 | **Prefix** | Always `0xE` (`1110`). Used to identify the state field. |
+| 11 | **Door Status** | `1` = Closed, `0` = Open (if sensor is present). |
+| 10 | **Aux Battery** | `1` = Auxiliary battery is low. |
+| 9 | **Invitation** | `1` = Invitation is pending/active. |
+| 8 | **Passage (L)** | `1` = Passage mode (Light) is active. |
+| 5–7 | **Battery** | Battery level: `0` (Critical) to `7` (Full). |
+| 4 | **Privacy** | `1` = Privacy mode (DND) is active. |
+| 3 | **Passage (N)** | `1` = Passage mode (Normal) is active. |
+| 2 | **VIP Mode** | `1` = VIP mode is currently active. |
+| 0–1 | **Op Mode** | `0` = Standard, `1` = Office, `2` = Timed. |
+
+---
+
 ## BLE GATT
 
 | Role | UUID | Direction |
@@ -53,21 +90,7 @@ Application (TLV commands)
 | S2C (notify) | `00000001-0000-1000-8000-00805f9b34fb` | lock → phone |
 | C2S (write) | `00000002-0000-1000-8000-00805f9b34fb` | phone → lock |
 
-ISEO locks advertise **16-bit service UUIDs** that encode device type, system
-state, and protocol info (parsed by `DefaultSbtBtAdvertisingParser`):
-
-| Short UUID | Meaning |
-|------------|---------|
-| `0xF001` | Device type = X1R_EVO |
-| `0xE800` | System state (door closed, battery level, open modes) |
-| `0xF040`, `0xF13E`, `0xC020` | Protocol info / state extension |
-
-**Discovery filter:** `(short_uuid & 0xFFC0) == 0xF000` — any device advertising
-a UUID in the range `0xF000–0xF03F` is an ISEO lock (`is_iseo_advertisement()`
-in `ble_client.py`).
-
-The GATT service (`BLE_SERVICE_UUID = 00001000-d102-11e1-9b23-00025b00a6a6`) is
-**not** present in advertisements; it is only visible after a GATT connection.
+The GATT service UUID is **not** present in advertisements; discovery must rely on the 16-bit Service UUIDs described above.
 
 ---
 

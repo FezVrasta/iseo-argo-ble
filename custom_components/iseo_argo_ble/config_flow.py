@@ -24,6 +24,7 @@ from homeassistant.helpers.selector import (
 )
 
 from iseo_argo_ble import IseoAuthError, IseoClient, IseoConnectionError, UserSubType, is_iseo_advertisement
+
 from .const import (
     CONF_ADDRESS,
     CONF_ADMIN_PRIV_SCALAR,

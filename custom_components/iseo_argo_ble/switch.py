@@ -19,16 +19,17 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from iseo_argo_ble import (
+    USER_TYPE_ACCOUNT,
+    USER_TYPE_BT,
+    USER_TYPE_FINGERPRINT,
+    USER_TYPE_INVITATION,
+    USER_TYPE_PIN,
+    USER_TYPE_RFID,
     IseoAuthError,
     IseoConnectionError,
-    USER_TYPE_RFID,
-    USER_TYPE_BT,
-    USER_TYPE_PIN,
-    USER_TYPE_INVITATION,
-    USER_TYPE_FINGERPRINT,
-    USER_TYPE_ACCOUNT,
     UserEntry,
 )
+
 from .const import CONF_ADDRESS, CONF_ADMIN_PRIV_SCALAR, CONF_ADMIN_UUID, CONF_UUID, DOMAIN
 from .coordinator import IseoLogCoordinator
 

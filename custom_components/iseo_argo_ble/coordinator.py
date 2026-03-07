@@ -8,9 +8,14 @@ from typing import Any
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, derive_private_key
-from homeassistant.components.bluetooth import async_ble_device_from_address
+from homeassistant.components.bluetooth import (
+    BluetoothScanningMode,
+    BluetoothServiceInfoBleak,
+    async_ble_device_from_address,
+    async_register_callback,
+)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import Context
+from homeassistant.core import CALLBACK_TYPE, Context, HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -18,11 +23,14 @@ from iseo_argo_ble import (
     IseoAuthError,
     IseoClient,
     IseoConnectionError,
+    LockState,
     LogEntry,
     UserEntry,
     UserSubType,
     battery_enum_to_pct,
+    parse_iseo_advertisement,
 )
+
 from .const import CONF_ADDRESS, CONF_ADMIN_PRIV_SCALAR, CONF_ADMIN_UUID, CONF_USER_MAP, DOMAIN, EVENT_TYPE
 
 _LOGGER = logging.getLogger(__name__)
@@ -116,6 +124,53 @@ def entry_message(entry: LogEntry, user_dir: dict[str, str] | None = None) -> st
     actor = _resolve_actor(raw, user_dir) if (raw and user_dir is not None) else raw
     name = event_name(entry.event_code)
     return f"{name} by {actor}" if actor else name
+
+
+class IseoAdvertisementCoordinator(DataUpdateCoordinator[LockState | None]):
+    """
+    Listens for BLE advertisements from the ISEO lock to update door and battery state.
+    Provides real-time "push" updates via passive scanning.
+    """
+
+    def __init__(self, hass: HomeAssistant, address: str) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"ISEO Advertisement {address}",
+        )
+        self.address = address
+        self._unsubscribe: CALLBACK_TYPE | None = None
+
+    @callback
+    def _async_handle_advertisement(
+        self, service_info: BluetoothServiceInfoBleak, _scanning_mode: BluetoothScanningMode
+    ) -> None:
+        """Handle a new advertisement from the lock."""
+        state = parse_iseo_advertisement(service_info.advertisement.service_uuids)
+        if state is not None:
+            _LOGGER.debug(
+                "Passive state update for %s: door_closed=%s, battery=%s",
+                self.address,
+                state.door_closed,
+                state.battery_level,
+            )
+            self.async_set_updated_data(state)
+
+    async def async_setup(self) -> None:
+        """Set up the advertisement listener."""
+        self._unsubscribe = async_register_callback(
+            self.hass,
+            self._async_handle_advertisement,
+            {"address": self.address},
+            BluetoothScanningMode.PASSIVE,
+        )
+
+    @callback
+    def async_stop(self) -> None:
+        """Stop the advertisement listener."""
+        if self._unsubscribe:
+            self._unsubscribe()
+            self._unsubscribe = None
 
 
 class IseoLogCoordinator(DataUpdateCoordinator["LogEntry | None"]):

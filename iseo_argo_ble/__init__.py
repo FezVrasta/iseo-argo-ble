@@ -1,4 +1,10 @@
 from .client import (
+    USER_TYPE_ACCOUNT,
+    USER_TYPE_BT,
+    USER_TYPE_FINGERPRINT,
+    USER_TYPE_INVITATION,
+    USER_TYPE_PIN,
+    USER_TYPE_RFID,
     IseoAuthError,
     IseoClient,
     IseoConnectionError,
@@ -10,6 +16,7 @@ from .client import (
     UserSubType,
     battery_enum_to_pct,
     is_iseo_advertisement,
+    parse_iseo_advertisement,
 )
 
 __all__ = [
@@ -20,8 +27,15 @@ __all__ = [
     "LockState",
     "LogEntry",
     "MasterAuthError",
+    "USER_TYPE_ACCOUNT",
+    "USER_TYPE_BT",
+    "USER_TYPE_FINGERPRINT",
+    "USER_TYPE_INVITATION",
+    "USER_TYPE_PIN",
+    "USER_TYPE_RFID",
     "UserEntry",
     "UserSubType",
     "battery_enum_to_pct",
     "is_iseo_advertisement",
+    "parse_iseo_advertisement",
 ]

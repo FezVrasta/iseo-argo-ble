@@ -10,14 +10,17 @@ from typing import Any
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.components.lock import LockEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from iseo_argo_ble import IseoAuthError, IseoConnectionError, LockState, UserSubType
+
 from .const import CONF_ADDRESS, CONF_USER_MAP, CONF_USER_SUBTYPE, CONF_UUID, DEFAULT_USER_SUBTYPE, DOMAIN
+from .coordinator import IseoAdvertisementCoordinator, IseoLogCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,17 +38,18 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     # Private key was already derived once in __init__.async_setup_entry.
-    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    coordinator: IseoLogCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    adv_coordinator: IseoAdvertisementCoordinator = hass.data[DOMAIN][entry.entry_id]["adv_coordinator"]
     uuid_bytes = bytes.fromhex(entry.data[CONF_UUID])
     subtype = entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE)
 
     async_add_entities(
-        [IseoLockEntity(entry, uuid_bytes, coordinator.identity_priv, subtype, coordinator.client)],
+        [IseoLockEntity(entry, uuid_bytes, coordinator.identity_priv, subtype, coordinator.client, adv_coordinator)],
         update_before_add=False,
     )
 
 
-class IseoLockEntity(LockEntity):
+class IseoLockEntity(CoordinatorEntity[IseoAdvertisementCoordinator], LockEntity):
     """Represents an ISEO X1R BLE door lock."""
 
     _attr_has_entity_name = True
@@ -59,7 +63,9 @@ class IseoLockEntity(LockEntity):
         identity_priv: Any,
         user_subtype: int = UserSubType.BT_SMARTPHONE,
         client: Any = None,
+        coordinator: IseoAdvertisementCoordinator | None = None,
     ) -> None:
+        super().__init__(coordinator)
         self._entry = entry
         self._uuid_bytes = uuid_bytes
         self._identity_priv = identity_priv
@@ -79,16 +85,44 @@ class IseoLockEntity(LockEntity):
             model="X1R Smart Lock",
         )
 
-        # Assume locked until we successfully open it.
+        # Initial state from advertisement if available
         self._attr_is_locked = True
+        if self.coordinator.data is not None:
+            self._attr_is_locked = self.coordinator.data.door_closed
+            self._door_status_supported = True
+
         self._attr_is_unlocking = False
         # Polls are suppressed until this time to avoid premature snap-back after unlock.
         self._poll_suppress_until: datetime | None = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the advertisement coordinator."""
+        state = self.coordinator.data
+        if state is None:
+            return
+
+        self._door_status_supported = True
+
+        # Don't override state while an unlock command is in flight, or while we're
+        # within the post-unlock suppression window (door sensor may still read closed).
+        if self._attr_is_unlocking:
+            return
+        if self._poll_suppress_until and datetime.now(tz=timezone.utc) < self._poll_suppress_until:
+            return
+
+        new_locked = state.door_closed
+        if new_locked != self._attr_is_locked:
+            self._attr_is_locked = new_locked
+            self.async_write_ha_state()
+
     async def async_added_to_hass(self) -> None:
         """Probe door-status support; start polling if the lock supports it."""
-        await self._poll_state()
+        await super().async_added_to_hass()
+        if self._door_status_supported is None:
+            await self._poll_state()
+
         if self._door_status_supported:
             self.async_on_remove(async_track_time_interval(self.hass, self._poll_state, _POLL_INTERVAL))
 
