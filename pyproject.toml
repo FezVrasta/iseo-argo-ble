@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "iseo-argo-ble"
-version = "0.5.4"
+version = "0.5.5"
 description = "ISEO Argo BLE Lock protocol library"
 readme = "README.md"
 requires-python = ">=3.11"

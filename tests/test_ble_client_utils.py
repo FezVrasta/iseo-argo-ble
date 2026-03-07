@@ -50,14 +50,29 @@ def test_parse_iseo_advertisement():
     state = parse_iseo_advertisement(uuids)
     assert state is not None
     assert state.door_closed is True
-    assert state.battery_level == 2 # OK
+    assert state.battery_level == 2  # OK
+    assert state.aux_battery_low is False
+    assert state.privacy_mode is False
+    assert state.operational_mode == 0
 
-    # Test open door, low battery (3)
-    # state: 0xE000 | (3 << 5) = 0xE060
-    uuids[3] = "0000e060-0000-1000-8000-00805f9b34fb"
+    # Test open door, low battery (3), privacy mode (0x10), VIP mode (0x04), Office mode (1)
+    # state: 0xE000 | (3 << 5) | 0x10 | 0x04 | 1 = 0xE000 | 0x60 | 0x10 | 0x04 | 1 = 0xE075
+    uuids[3] = "0000e075-0000-1000-8000-00805f9b34fb"
     state = parse_iseo_advertisement(uuids)
     assert state.door_closed is False
-    assert state.battery_level == 3 # LOW
+    assert state.battery_level == 3
+    assert state.privacy_mode is True
+    assert state.vip_mode is True
+    assert state.operational_mode == 1
+
+    # Test aux battery low (0x0400), invitation pending (0x0200), passage light (0x0100), passage normal (0x0008)
+    # state: 0xE000 | 0x0400 | 0x0200 | 0x0100 | 0x0008 = 0xE708
+    uuids[3] = "0000e708-0000-1000-8000-00805f9b34fb"
+    state = parse_iseo_advertisement(uuids)
+    assert state.aux_battery_low is True
+    assert state.invitation_pending is True
+    assert state.passage_mode_light is True
+    assert state.passage_mode_normal is True
 
     # Test invalid state prefix
     uuids[3] = "0000d000-0000-1000-8000-00805f9b34fb"

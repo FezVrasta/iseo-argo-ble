@@ -109,14 +109,24 @@ def parse_iseo_advertisement(service_uuids: list[str]) -> LockState | None:
 
     door_closed = bool(state_val & _STATE_DOOR_CLOSED)
     battery_level = (state_val >> _STATE_BATTERY_SHIFT) & _STATE_BATTERY_MASK
+    aux_battery_low = bool(state_val & _STATE_AUX_BATTERY_LOW)
+    invitation_pending = bool(state_val & _STATE_INVITATION_PENDING)
+    passage_mode_light = bool(state_val & _STATE_PASSAGE_MODE_LIGHT)
+    privacy_mode = bool(state_val & _STATE_PRIVACY_MODE)
+    passage_mode_normal = bool(state_val & _STATE_PASSAGE_MODE_NORMAL)
+    vip_mode = bool(state_val & _STATE_VIP_MODE)
+    operational_mode = state_val & _STATE_OP_MODE_MASK
 
-    # Optional: extract more fields if needed
-    # bit 4 (16) = Privacy Mode
-    # bit 3 (8) = Passage Mode Normal
-    # bit 8 (256) = Passage Mode Light
     return LockState(
         door_closed=door_closed,
         battery_level=battery_level,
+        aux_battery_low=aux_battery_low,
+        invitation_pending=invitation_pending,
+        passage_mode_light=passage_mode_light,
+        privacy_mode=privacy_mode,
+        passage_mode_normal=passage_mode_normal,
+        vip_mode=vip_mode,
+        operational_mode=operational_mode,
     )
 
 
@@ -238,8 +248,15 @@ _INFO_CLIENT_PAYLOAD = bytes([0x01, 0x02, 0x00, 0x09])  # tag=1, len=2, FL_9=0x0
 _CAP_DOOR_STATUS = 0x80
 # SystemState (Tag 5): bit 11 = door is closed; bits 7-5 = battery level
 _STATE_DOOR_CLOSED = 0x0800
+_STATE_AUX_BATTERY_LOW = 0x0400
+_STATE_INVITATION_PENDING = 0x0200
+_STATE_PASSAGE_MODE_LIGHT = 0x0100
 _STATE_BATTERY_SHIFT = 5
 _STATE_BATTERY_MASK = 0x7  # 3-bit field
+_STATE_PRIVACY_MODE = 0x0010
+_STATE_PASSAGE_MODE_NORMAL = 0x0008
+_STATE_VIP_MODE = 0x0004
+_STATE_OP_MODE_MASK = 0x3
 
 # Outer TLV tag / user type values (SbtUserType)
 USER_TYPE_RFID = 16
@@ -319,6 +336,13 @@ class LockState:
         door_closed: bool | None,
         firmware_info: str | None = None,
         battery_level: int | None = None,
+        aux_battery_low: bool | None = None,
+        invitation_pending: bool | None = None,
+        passage_mode_light: bool | None = None,
+        privacy_mode: bool | None = None,
+        passage_mode_normal: bool | None = None,
+        vip_mode: bool | None = None,
+        operational_mode: int | None = None,
     ) -> None:
         # None means the lock does not expose a door-contact sensor.
         self.door_closed = door_closed
@@ -326,6 +350,28 @@ class LockState:
         self.firmware_info = firmware_info
         # 3-bit enum from SystemState bits 7-5 (see BATTERY_LEVEL_* constants).
         self.battery_level = battery_level
+        # Bit 10 of SystemState
+        self.aux_battery_low = aux_battery_low
+        # Bit 9 of SystemState
+        self.invitation_pending = invitation_pending
+        # Bit 8 of SystemState
+        self.passage_mode_light = passage_mode_light
+        # Bit 4 of SystemState
+        self.privacy_mode = privacy_mode
+        # Bit 3 of SystemState
+        self.passage_mode_normal = passage_mode_normal
+        # Bit 2 of SystemState
+        self.vip_mode = vip_mode
+        # Bits 0-1 of SystemState (0=Standard, 1=Office, 2=Timed)
+        self.operational_mode = operational_mode
+
+    def __repr__(self) -> str:
+        return (
+            f"LockState(door_closed={self.door_closed}, battery={self.battery_level}, "
+            f"aux_bat_low={self.aux_battery_low}, privacy={self.privacy_mode}, "
+            f"passage_n={self.passage_mode_normal}, passage_l={self.passage_mode_light}, "
+            f"vip={self.vip_mode}, op_mode={self.operational_mode})"
+        )
 
 
 @dataclass
@@ -1067,22 +1113,35 @@ class IseoClient:
 
             state_bytes = tags.get(5, b"")
             system_state = struct.unpack_from(">H", state_bytes)[0] if len(state_bytes) >= 2 else None
-            battery_level: int | None = (
-                (system_state >> _STATE_BATTERY_SHIFT) & _STATE_BATTERY_MASK if system_state is not None else None
-            )
+
+            lock_state_kwargs: dict[str, Any] = {
+                "firmware_info": firmware_info,
+            }
+
+            if system_state is not None:
+                lock_state_kwargs.update({
+                    "battery_level": (system_state >> _STATE_BATTERY_SHIFT) & _STATE_BATTERY_MASK,
+                    "aux_battery_low": bool(system_state & _STATE_AUX_BATTERY_LOW),
+                    "invitation_pending": bool(system_state & _STATE_INVITATION_PENDING),
+                    "passage_mode_light": bool(system_state & _STATE_PASSAGE_MODE_LIGHT),
+                    "privacy_mode": bool(system_state & _STATE_PRIVACY_MODE),
+                    "passage_mode_normal": bool(system_state & _STATE_PASSAGE_MODE_NORMAL),
+                    "vip_mode": bool(system_state & _STATE_VIP_MODE),
+                    "operational_mode": system_state & _STATE_OP_MODE_MASK,
+                })
 
             cap_bytes = tags.get(4, b"\x00")
             capabilities = int.from_bytes(cap_bytes, "big") if cap_bytes else 0
             if not (capabilities & _CAP_DOOR_STATUS):
                 _LOGGER.debug("Door status not supported (capabilities=0x%x)", capabilities)
-                return LockState(door_closed=None, firmware_info=firmware_info, battery_level=battery_level)
+                return LockState(door_closed=None, **lock_state_kwargs)
 
             if system_state is None:
                 _LOGGER.debug("SystemState tag missing or too short")
-                return LockState(door_closed=None, firmware_info=firmware_info, battery_level=battery_level)
+                return LockState(door_closed=None, **lock_state_kwargs)
 
             door_closed = bool(system_state & _STATE_DOOR_CLOSED)
-            return LockState(door_closed=door_closed, firmware_info=firmware_info, battery_level=battery_level)
+            return LockState(door_closed=door_closed, **lock_state_kwargs)
 
     async def read_logs(
         self,
