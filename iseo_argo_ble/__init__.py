@@ -1,4 +1,5 @@
 from .client import (
+    BATTERY_LEVEL_LABELS,
     USER_TYPE_ACCOUNT,
     USER_TYPE_BT,
     USER_TYPE_FINGERPRINT,
@@ -33,6 +34,7 @@ __all__ = [
     "USER_TYPE_INVITATION",
     "USER_TYPE_PIN",
     "USER_TYPE_RFID",
+    "BATTERY_LEVEL_LABELS",
     "UserEntry",
     "UserSubType",
     "battery_enum_to_pct",

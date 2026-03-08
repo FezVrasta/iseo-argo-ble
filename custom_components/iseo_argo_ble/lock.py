@@ -23,6 +23,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
 from iseo_argo_ble import (
+    BATTERY_LEVEL_LABELS,
     IseoAuthError,
     IseoClient,
     IseoConnectionError,
@@ -179,7 +180,9 @@ class IseoLockEntity(LockEntity):
         """Update extra state attributes from a LockState (advertisement or poll)."""
         attrs: dict[str, Any] = {}
         if state.battery_level is not None:
-            attrs["battery_level"] = state.battery_level
+            attrs["battery_level"] = BATTERY_LEVEL_LABELS.get(
+                state.battery_level, f"Unknown ({state.battery_level})"
+            )
         if state.aux_battery_low is not None:
             attrs["aux_battery_low"] = state.aux_battery_low
         if state.invitation_pending is not None:
