@@ -75,5 +75,5 @@
   "integration_type": "device",
   "iot_class": "local_polling",
   "loggers": ["iseo_argo_ble"],
-  "requirements": ["iseo-argo-ble==0.5.7"]
+  "requirements": []
 }

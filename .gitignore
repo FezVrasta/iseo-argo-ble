@@ -5,3 +5,4 @@ iseo_poc.py
 test_decrypt.py
 .claude
 __pycache__
+.vscode

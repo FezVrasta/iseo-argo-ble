@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
@@ -14,8 +15,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from iseo_argo_ble import IseoClient, UserEntry
-
+from .client import IseoClient, UserEntry
 from .const import (
     CONF_ADDRESS,
     CONF_PRIV_SCALAR,
@@ -36,6 +36,7 @@ class IseoData:
 
     client: IseoClient
     user_coordinator: DataUpdateCoordinator[list[UserEntry]]
+    ble_lock: asyncio.Lock
 
 
 type IseoConfigEntry = ConfigEntry[IseoData]
@@ -67,10 +68,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool
             # We need a fresh BLE device reference for each connection
             if dev := async_ble_device_from_address(hass, address, connectable=True):
                 client.update_ble_device(dev)
-            return await client.read_users()
+            async with ble_lock:
+                return await client.read_users()
         except Exception as err:
             raise UpdateFailed(f"Error communicating with lock: {err}") from err
 
+    ble_lock = asyncio.Lock()
     user_coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
@@ -85,6 +88,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool
     entry.runtime_data = IseoData(
         client=client,
         user_coordinator=user_coordinator,
+        ble_lock=ble_lock,
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

@@ -5,16 +5,16 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from iseo_argo_ble import USER_TYPE_BT, USER_TYPE_PIN, USER_TYPE_RFID, UserEntry
-
 from . import IseoConfigEntry
-from .const import CONF_USER_MAPPING, DOMAIN
+from .client import USER_TYPE_BT, USER_TYPE_PIN, USER_TYPE_RFID, UserEntry
+from .const import CONF_ADDRESS, CONF_USER_MAPPING, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,9 +76,7 @@ class IseoUserSwitch(CoordinatorEntity, SwitchEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
-        user_type_label = USER_TYPE_LABELS.get(
-            self._user_type, f"Unknown ({self._user_type})"
-        )
+        user_type_label = USER_TYPE_LABELS.get(self._user_type, f"Unknown ({self._user_type})")
 
         attrs = {
             "user_type": user_type_label,
@@ -114,12 +112,21 @@ class IseoUserSwitch(CoordinatorEntity, SwitchEntity):
     async def _set_disabled(self, disabled: bool) -> None:
         """Set the disabled state on the lock."""
         client = self._entry.runtime_data.client
+        ble_lock = self._entry.runtime_data.ble_lock
+        address = self._entry.data[CONF_ADDRESS]
+
+        if not (ble_device := async_ble_device_from_address(self.hass, address, connectable=True)):
+            _LOGGER.error("Could not find ISEO lock %s to update user state", address)
+            return
+
         try:
-            await client.set_user_disabled(
-                uuid_hex=self._uuid_hex,
-                user_type=self._user_type,
-                disabled=disabled,
-            )
+            async with ble_lock:
+                client.update_ble_device(ble_device)
+                await client.set_user_disabled(
+                    uuid_hex=self._uuid_hex,
+                    user_type=self._user_type,
+                    disabled=disabled,
+                )
             # Refresh the coordinator to get updated state
             await self.coordinator.async_request_refresh()
         except Exception as err:

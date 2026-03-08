@@ -22,7 +22,8 @@ from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceIn
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
-from iseo_argo_ble import (
+from . import IseoConfigEntry
+from .client import (
     BATTERY_LEVEL_LABELS,
     IseoAuthError,
     IseoClient,
@@ -30,8 +31,6 @@ from iseo_argo_ble import (
     LockState,
     parse_iseo_advertisement,
 )
-
-from . import IseoConfigEntry
 from .const import CONF_ADDRESS, CONF_PASSIVE_SCANNING, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -76,12 +75,12 @@ class IseoLockEntity(LockEntity):
         """Initialize the lock entity."""
         self._entry = entry
         self._relock_task: asyncio.Task[None] | None = None
-        self._ble_lock = asyncio.Lock()
         self._door_status_supported: bool | None = None
         self._poll_unsub: CALLBACK_TYPE | None = None
         self._passive_unsub: CALLBACK_TYPE | None = None
         self._fw_version_set = False
         self.client: IseoClient = client
+        self._ble_lock = entry.runtime_data.ble_lock
 
         self._attr_unique_id = f"{entry.unique_id}_lock"
         self._attr_device_info = DeviceInfo(

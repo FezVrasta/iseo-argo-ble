@@ -897,10 +897,7 @@ class IseoClient:
         """
         if self._ble_device is not None and _bleak_establish_connection is not None:
             client = await _bleak_establish_connection(BleakClient, self._ble_device, self._address)
-            try:
-                yield client
-            finally:
-                await client.disconnect()
+            yield client
         else:
             if self._ble_device is None and _bleak_establish_connection is not None:
                 # bleak_retry_connector is available (HA production context) but no BLEDevice
@@ -1411,6 +1408,22 @@ class IseoClient:
         if sbt.get("status") != _SBT_STATUS_OK:
             raise IseoAuthError(f"STORE_CONFIG failed with status={sbt.get('status')}")
 
+    async def _register_log_notif_internal(self, client: BleakClient) -> None:
+        """Internal logic to register for log notifications (opcode 64)."""
+        _LOGGER.debug("Registering for log notifications (opcode 64)")
+        payload = _tlv_user_id(self._uuid_bytes, self._subtype)
+        await self._send_sbt(client, _OP_TLV_LOG_NOTIF_REGISTER, payload)
+
+        try:
+            sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
+        except asyncio.TimeoutError as exc:
+            raise IseoConnectionError("No response to LOG_NOTIF_REGISTER") from exc
+
+        if sbt.get("status") != _SBT_STATUS_OK:
+            raise IseoAuthError(
+                f"Log notification registration failed (status={sbt.get('status')})"
+            )
+
     async def setup_gateway(
         self,
         master_password: str | None = None,
@@ -1597,11 +1610,15 @@ class IseoClient:
             # Read all users within the same connection to get raw inner TLV bytes.
             users_raw: list[tuple[int, bytes]] = []
             fetch_start = 0
+            fetch_max = 0xFFFF
+            first_block = True
+
             while True:
-                req = struct.pack(">HH", fetch_start, 0xFFFF)
+                req = struct.pack(">HH", fetch_start, fetch_max)
                 await self._send_sbt(client, _OP_TLV_READ_USER_BLOCK, req)
                 try:
-                    sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
+                    sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP if first_block else _TIMEOUT_OP)
+                    first_block = False
                 except asyncio.TimeoutError as exc:
                     raise IseoConnectionError("Timed out reading user block from lock") from exc
                 if sbt.get("status", 0) != _SBT_STATUS_OK:
@@ -1615,6 +1632,7 @@ class IseoClient:
                     if outer_tag in _USER_TYPE_RANGE:
                         users_raw.append((outer_tag, inner_bytes))
                 fetch_start += page_count
+                fetch_max = remaining
                 if remaining == 0 or page_count == 0:
                     break
 
@@ -1688,11 +1706,15 @@ class IseoClient:
             # Read all users within the same connection to get raw inner TLV bytes.
             users_raw: list[tuple[int, bytes]] = []
             fetch_start = 0
+            fetch_max = 0xFFFF
+            first_block = True
+
             while True:
-                req = struct.pack(">HH", fetch_start, 0xFFFF)
+                req = struct.pack(">HH", fetch_start, fetch_max)
                 await self._send_sbt(client, _OP_TLV_READ_USER_BLOCK, req)
                 try:
-                    sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
+                    sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP if first_block else _TIMEOUT_OP)
+                    first_block = False
                 except asyncio.TimeoutError as exc:
                     raise IseoConnectionError("Timed out reading user block from lock") from exc
                 if sbt.get("status", 0) != _SBT_STATUS_OK:
@@ -1706,6 +1728,7 @@ class IseoClient:
                     if outer_tag in _USER_TYPE_RANGE:
                         users_raw.append((outer_tag, inner_bytes))
                 fetch_start += page_count
+                fetch_max = remaining
                 if remaining == 0 or page_count == 0:
                     break
 

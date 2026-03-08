@@ -25,15 +25,14 @@ from homeassistant.helpers.selector import (
     selector,
 )
 
-from iseo_argo_ble import (
+from . import IseoData
+from .client import (
     USER_TYPE_BT,
     IseoAuthError,
     IseoClient,
     IseoConnectionError,
     is_iseo_advertisement,
 )
-
-from . import IseoData
 from .const import (
     CONF_ADDRESS,
     CONF_PASSIVE_SCANNING,
