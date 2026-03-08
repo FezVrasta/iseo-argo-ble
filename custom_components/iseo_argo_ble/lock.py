@@ -3,17 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
-
-from iseo_argo_ble import (
-    IseoAuthError,
-    IseoClient,
-    IseoConnectionError,
-    LockState,
-    parse_iseo_advertisement,
-)
 
 from homeassistant.components.bluetooth import (
     BluetoothChange,
@@ -29,6 +21,14 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
+
+from iseo_argo_ble import (
+    IseoAuthError,
+    IseoClient,
+    IseoConnectionError,
+    LockState,
+    parse_iseo_advertisement,
+)
 
 from . import IseoConfigEntry
 from .const import CONF_ADDRESS, CONF_PASSIVE_SCANNING, DOMAIN
@@ -54,7 +54,7 @@ async def async_setup_entry(
         [
             IseoLockEntity(
                 entry,
-                entry.runtime_data,
+                entry.runtime_data.client,
             )
         ],
     )
@@ -131,9 +131,7 @@ class IseoLockEntity(LockEntity):
             self.async_on_remove(self._stop_passive_scanning)
         elif self._door_status_supported is not False:
             # Fall back to active polling when passive scanning is disabled.
-            self._poll_unsub = async_track_time_interval(
-                self.hass, self._poll_state, _POLL_INTERVAL
-            )
+            self._poll_unsub = async_track_time_interval(self.hass, self._poll_state, _POLL_INTERVAL)
             self.async_on_remove(self._poll_unsub)
 
         self.async_on_remove(self._cancel_relock_task)
@@ -159,7 +157,7 @@ class IseoLockEntity(LockEntity):
         habluetooth ever exposes a public API for this pattern.
         """
         try:
-            from habluetooth import get_manager  # type: ignore[import-untyped]
+            from habluetooth import get_manager
         except ImportError:
             return
 
@@ -214,10 +212,7 @@ class IseoLockEntity(LockEntity):
         if self._attr_is_unlocking:
             self.async_write_ha_state()
             return
-        if (
-            self._poll_suppress_until
-            and datetime.now(tz=UTC) < self._poll_suppress_until
-        ):
+        if self._poll_suppress_until and datetime.now(tz=UTC) < self._poll_suppress_until:
             self.async_write_ha_state()
             return
 
@@ -236,9 +231,7 @@ class IseoLockEntity(LockEntity):
         if self._relock_task and not self._relock_task.done():
             self._relock_task.cancel()
 
-    async def _poll_state(
-        self, _now: datetime | None = None, force: bool = False
-    ) -> None:
+    async def _poll_state(self, _now: datetime | None = None, force: bool = False) -> None:
         """Read door state via TLV_INFO and update HA state."""
         _LOGGER.debug("Polling lock state, current available: %s", self._attr_available)
         if self._door_status_supported is False and _now is not None and not force:
@@ -281,9 +274,7 @@ class IseoLockEntity(LockEntity):
         if not self._fw_version_set and state.firmware_info:
             fw_version = state.firmware_info[5:].strip() or state.firmware_info.strip()
             dev_reg = dr.async_get(self.hass)
-            if device := dev_reg.async_get_device(
-                identifiers={(DOMAIN, cast(str, self._entry.unique_id))}
-            ):
+            if device := dev_reg.async_get_device(identifiers={(DOMAIN, cast(str, self._entry.unique_id))}):
                 dev_reg.async_update_device(device.id, sw_version=fw_version)
                 self._fw_version_set = True
 
@@ -302,11 +293,7 @@ class IseoLockEntity(LockEntity):
         if self._attr_is_unlocking:
             self.async_write_ha_state()
             return
-        if (
-            not force
-            and self._poll_suppress_until
-            and datetime.now(tz=UTC) < self._poll_suppress_until
-        ):
+        if not force and self._poll_suppress_until and datetime.now(tz=UTC) < self._poll_suppress_until:
             self.async_write_ha_state()
             return
 
@@ -325,9 +312,7 @@ class IseoLockEntity(LockEntity):
         self._attr_is_unlocking = False
         self._attr_is_locked = False
         self._attr_available = available
-        self._poll_suppress_until = datetime.now(tz=UTC) + timedelta(
-            seconds=_RELOCK_DELAY
-        )
+        self._poll_suppress_until = datetime.now(tz=UTC) + timedelta(seconds=_RELOCK_DELAY)
         self.async_write_ha_state()
 
     def _set_locked(self, available: bool = True) -> None:

@@ -107,8 +107,7 @@
   "selector": {
     "management_choice": {
       "options": {
-        "users": "Gestisci Collegamento Utenti",
-        "admin": "Gestisci Identità Amministratore (collega/scollega utente amministratore)"
+        "users": "Gestisci Collegamento Utenti"
       }
     },
     "admin_choice": {
@@ -133,6 +132,17 @@
       "battery": {
         "name": "Batteria"
       }
+    }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "Impossibile connettersi alla serratura."
+    },
+    "lock_not_supported": {
+      "message": "Il blocco manuale non è supportato da questo dispositivo. La serratura si riaggancia automaticamente dopo l'apertura."
+    },
+    "lock_rejected_identity": {
+      "message": "La serratura ha rifiutato l'identità. Assicurati che l'UID sia registrato nell'app Argo."
     }
   }
 }

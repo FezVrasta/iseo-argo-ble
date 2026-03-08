@@ -112,7 +112,9 @@ def _save_identity(path: Path, uuid_bytes: bytes, priv: object, address: str | N
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
-def _get_effective_address(args: argparse.Namespace, uuid_bytes: bytes, priv: object, stored_address: str | None) -> str:
+def _get_effective_address(
+    args: argparse.Namespace, uuid_bytes: bytes, priv: object, stored_address: str | None
+) -> str:
     """Resolve address from args or storage, and update storage if needed."""
     address = args.address or stored_address
     if not address:
@@ -234,10 +236,7 @@ async def cmd_open(args: argparse.Namespace) -> None:
     try:
         await client.open_lock(connect_timeout=args.timeout)
     except IseoAuthError as exc:
-        sys.exit(
-            f"Auth failed: {exc}\n"
-            "Make sure the UUID is registered in the Argo app with the correct subtype."
-        )
+        sys.exit(f"Auth failed: {exc}\nMake sure the UUID is registered in the Argo app with the correct subtype.")
     except IseoConnectionError as exc:
         sys.exit(f"Connection failed: {exc}")
     print("Lock opened.")
@@ -345,7 +344,9 @@ async def cmd_register_gateway(args: argparse.Namespace) -> None:
     except Exception as exc:
         sys.exit(f"Setup failed: {exc}")
 
-    print(f"Success! Identity {uuid_bytes.hex().upper()} registered as Gateway '{args.name}' with log notifications enabled.")
+    print(
+        f"Success! Identity {uuid_bytes.hex().upper()} registered as Gateway '{args.name}' with log notifications enabled."
+    )
     print("You can now use:  iseo_cli.py gw-open")
 
 
@@ -562,7 +563,9 @@ async def cmd_delete_user(args: argparse.Namespace) -> None:
 
     # Final confirmation
     print(f"\nTarget UUID: {target_uuid_hex.upper()}")
-    confirm = input("Are you SURE you want to remove this user from the lock? (type 'yes' to confirm): ").strip().lower()
+    confirm = (
+        input("Are you SURE you want to remove this user from the lock? (type 'yes' to confirm): ").strip().lower()
+    )
     if confirm != "yes":
         print("Aborted.")
         return
@@ -701,7 +704,11 @@ async def cmd_users(args: argparse.Namespace) -> None:
     print(f"\n{'#':>4}  {'Type':<12}  {'UUID':<36}  {'Status':<10}  Name")
     print("-" * 90)
     for i, u in enumerate(users, start=1):
-        type_label = _USER_TYPE_LABELS.get(u.user_type, f"Type{u.user_type}")
+        if u.user_type == 17:
+            type_label = "Gateway" if u.inner_subtype == 17 else "Phone"
+        else:
+            type_label = _USER_TYPE_LABELS.get(u.user_type, f"Type{u.user_type}")
+
         name = u.name or "(no name)"
         status = "disabled" if u.disabled else "active"
         print(f"{i:>4}  {type_label:<12}  {u.uuid_hex:<36}  {status:<10}  {name}")
@@ -850,7 +857,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_reg_gw.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
     p_reg_gw.add_argument("--password", help="Lock master password (optional if Master Card is scanned first)")
     p_reg_gw.add_argument("--name", default="Home Assistant", help="Name for the gateway user")
-    p_reg_gw.add_argument("--enable-door-status", action="store_true", help="Enable Door Status Advice flag on the lock")
+    p_reg_gw.add_argument(
+        "--enable-door-status", action="store_true", help="Enable Door Status Advice flag on the lock"
+    )
 
     p_reg_pin = sub.add_parser("register-pin", help="Register/Update a PIN user")
     p_reg_pin.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
