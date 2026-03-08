@@ -3,29 +3,41 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
-from homeassistant.components.bluetooth import async_ble_device_from_address
+from iseo_argo_ble import (
+    IseoAuthError,
+    IseoClient,
+    IseoConnectionError,
+    LockState,
+    parse_iseo_advertisement,
+)
+
+from homeassistant.components.bluetooth import (
+    BluetoothChange,
+    BluetoothServiceInfoBleak,
+    async_ble_device_from_address,
+    async_register_callback,
+)
+from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
 from homeassistant.components.lock import LockEntity
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from iseo_argo_ble import IseoAuthError, IseoConnectionError, LockState, UserSubType
-
-from .const import CONF_ADDRESS, CONF_USER_MAP, CONF_USER_SUBTYPE, CONF_UUID, DEFAULT_USER_SUBTYPE, DOMAIN
-from .coordinator import IseoAdvertisementCoordinator, IseoLogCoordinator
+from . import IseoConfigEntry
+from .const import CONF_ADDRESS, CONF_PASSIVE_SCANNING, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+PARALLEL_UPDATES = 1
+
 # Seconds the entity stays in "unlocked" state before reverting to "locked".
-# Used as a fallback when the lock does not expose a door-contact sensor.
 _RELOCK_DELAY = 5
 
 # How often to poll the lock for door state (when door status is supported).
@@ -34,22 +46,21 @@ _POLL_INTERVAL = timedelta(seconds=30)
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: IseoConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    # Private key was already derived once in __init__.async_setup_entry.
-    coordinator: IseoLogCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-    adv_coordinator: IseoAdvertisementCoordinator = hass.data[DOMAIN][entry.entry_id]["adv_coordinator"]
-    uuid_bytes = bytes.fromhex(entry.data[CONF_UUID])
-    subtype = entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE)
-
+    """Set up ISEO lock entity from a config entry."""
     async_add_entities(
-        [IseoLockEntity(entry, uuid_bytes, coordinator.identity_priv, subtype, coordinator.client, adv_coordinator)],
-        update_before_add=False,
+        [
+            IseoLockEntity(
+                entry,
+                entry.runtime_data,
+            )
+        ],
     )
 
 
-class IseoLockEntity(CoordinatorEntity[IseoAdvertisementCoordinator], LockEntity):
+class IseoLockEntity(LockEntity):
     """Represents an ISEO X1R BLE door lock."""
 
     _attr_has_entity_name = True
@@ -58,171 +69,296 @@ class IseoLockEntity(CoordinatorEntity[IseoAdvertisementCoordinator], LockEntity
 
     def __init__(
         self,
-        entry: ConfigEntry,
-        uuid_bytes: bytes,
-        identity_priv: Any,
-        user_subtype: int = UserSubType.BT_SMARTPHONE,
-        client: Any = None,
-        coordinator: IseoAdvertisementCoordinator | None = None,
+        entry: IseoConfigEntry,
+        client: IseoClient,
     ) -> None:
-        super().__init__(coordinator)
+        """Initialize the lock entity."""
         self._entry = entry
-        self._uuid_bytes = uuid_bytes
-        self._identity_priv = identity_priv
-        self._user_subtype = user_subtype
-        self._relock_task: asyncio.Task | None = None
+        self._relock_task: asyncio.Task[None] | None = None
         self._ble_lock = asyncio.Lock()
-        self._door_status_supported: bool | None = None  # None = not yet probed
+        self._door_status_supported: bool | None = None
+        self._poll_unsub: CALLBACK_TYPE | None = None
+        self._passive_unsub: CALLBACK_TYPE | None = None
         self._fw_version_set = False
+        self.client: IseoClient = client
 
-        self.client = client
-
-        self._attr_unique_id = f"{entry.data[CONF_ADDRESS].replace(':', '').lower()}_lock"
+        self._attr_unique_id = f"{entry.unique_id}_lock"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name="ISEO Lock",
+            identifiers={(DOMAIN, cast(str, entry.unique_id))},
+            connections={(CONNECTION_BLUETOOTH, entry.data[CONF_ADDRESS])},
+            name=entry.title,
             manufacturer="ISEO",
-            model="X1R Smart Lock",
+            model="X1R Smart",
+            model_id="X1R",
         )
 
-        # Initial state from advertisement if available
         self._attr_is_locked = True
-        if self.coordinator.data is not None:
-            self._attr_is_locked = self.coordinator.data.door_closed
-            self._door_status_supported = True
-
         self._attr_is_unlocking = False
-        # Polls are suppressed until this time to avoid premature snap-back after unlock.
+        self._attr_available = True
         self._poll_suppress_until: datetime | None = None
+        self._attr_extra_state_attributes: dict[str, Any] = {}
 
-    # ── Lifecycle ──────────────────────────────────────────────────────────
+    async def async_added_to_hass(self) -> None:
+        """Probe door-status support; start polling or passive scanning as configured."""
+        passive_scanning = self._entry.data.get(CONF_PASSIVE_SCANNING, False)
+
+        if not passive_scanning:
+            await self._poll_state()
+
+        if passive_scanning:
+            # Register a passive BLE advertisement callback so we get door-state
+            # updates without ever connecting.  We use the private-API workaround
+            # from habluetooth issue #358 to keep callbacks alive: after every
+            # advertisement the address history is cleared so HA treats the next
+            # advertisement as "new" and fires our callback again.
+            address = self._entry.data[CONF_ADDRESS]
+
+            @callback
+            def _on_advertisement(
+                service_info: BluetoothServiceInfoBleak,
+                change: BluetoothChange,
+            ) -> None:
+                """Handle a passive BLE advertisement from the lock."""
+                self._handle_advertisement(service_info)
+                self._clear_advertisement_history(address)
+
+            self._passive_unsub = async_register_callback(
+                self.hass,
+                _on_advertisement,
+                BluetoothCallbackMatcher(address=address),
+                BluetoothChange.ADVERTISEMENT,
+            )
+            self.async_on_remove(self._stop_passive_scanning)
+        elif self._door_status_supported is not False:
+            # Fall back to active polling when passive scanning is disabled.
+            self._poll_unsub = async_track_time_interval(
+                self.hass, self._poll_state, _POLL_INTERVAL
+            )
+            self.async_on_remove(self._poll_unsub)
+
+        self.async_on_remove(self._cancel_relock_task)
+
+    def _stop_passive_scanning(self) -> None:
+        """Unregister the passive BLE callback."""
+        if self._passive_unsub is not None:
+            self._passive_unsub()
+            self._passive_unsub = None
+
+    @staticmethod
+    def _clear_advertisement_history(address: str) -> None:
+        """Clear the habluetooth advertisement history for an address.
+
+        This is the workaround described in habluetooth issue #358.
+        Because the ISEO lock encodes door state as mutually-exclusive service
+        UUIDs, HA's dedup logic would suppress repeated callbacks after the
+        first advertisement.  Clearing the history tricks HA into treating every
+        advertisement as new data, keeping callbacks alive indefinitely.
+
+        This intentionally touches private internals (_all_history,
+        _connectable_history, _previous_service_info) and must be updated if
+        habluetooth ever exposes a public API for this pattern.
+        """
+        try:
+            from habluetooth import get_manager  # type: ignore[import-untyped]
+        except ImportError:
+            return
+
+        try:
+            manager = get_manager()
+        except Exception:  # noqa: BLE001
+            return
+
+        # Clear the two history dicts on the manager.
+        getattr(manager, "_all_history", {}).pop(address, None)
+        getattr(manager, "_connectable_history", {}).pop(address, None)
+
+        # Clear per-scanner previous_service_info so the next advertisement
+        # is treated as a new event by the change-detection logic.
+        for scanner in getattr(manager, "_sources", {}).values():
+            getattr(scanner, "_previous_service_info", {}).pop(address, None)
+
+    def _apply_state(self, state: LockState) -> None:
+        """Update extra state attributes from a LockState (advertisement or poll)."""
+        attrs: dict[str, Any] = {}
+        if state.battery_level is not None:
+            attrs["battery_level"] = state.battery_level
+        if state.aux_battery_low is not None:
+            attrs["aux_battery_low"] = state.aux_battery_low
+        if state.invitation_pending is not None:
+            attrs["invitation_pending"] = state.invitation_pending
+        if state.passage_mode_light is not None:
+            attrs["passage_mode_light"] = state.passage_mode_light
+        if state.passage_mode_normal is not None:
+            attrs["passage_mode_normal"] = state.passage_mode_normal
+        if state.privacy_mode is not None:
+            attrs["privacy_mode"] = state.privacy_mode
+        if state.vip_mode is not None:
+            attrs["vip_mode"] = state.vip_mode
+        if state.operational_mode is not None:
+            attrs["operational_mode"] = state.operational_mode
+        self._attr_extra_state_attributes = {
+            **self._attr_extra_state_attributes,
+            **attrs,
+        }
+
     @callback
-    def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the advertisement coordinator."""
-        state = self.coordinator.data
-        if state is None:
+    def _handle_advertisement(self, service_info: BluetoothServiceInfoBleak) -> None:
+        """Parse a passive advertisement and update door state."""
+        state = parse_iseo_advertisement(list(service_info.service_uuids or []))
+        if state is None or state.door_closed is None:
             return
 
         self._door_status_supported = True
+        self._apply_state(state)
 
-        # Don't override state while an unlock command is in flight, or while we're
-        # within the post-unlock suppression window (door sensor may still read closed).
         if self._attr_is_unlocking:
+            self.async_write_ha_state()
             return
-        if self._poll_suppress_until and datetime.now(tz=timezone.utc) < self._poll_suppress_until:
+        if (
+            self._poll_suppress_until
+            and datetime.now(tz=UTC) < self._poll_suppress_until
+        ):
+            self.async_write_ha_state()
             return
 
         new_locked = state.door_closed
         if new_locked != self._attr_is_locked:
+            _LOGGER.debug(
+                "Passive advertisement: door_closed=%s → is_locked=%s",
+                state.door_closed,
+                new_locked,
+            )
             self._attr_is_locked = new_locked
-            self.async_write_ha_state()
+        self.async_write_ha_state()
 
-    async def async_added_to_hass(self) -> None:
-        """Probe door-status support; start polling if the lock supports it."""
-        await super().async_added_to_hass()
-        if self._door_status_supported is None:
-            try:
-                # Use a brief timeout for the initial probe to avoid hanging setup
-                async with asyncio.timeout(5):
-                    await self._poll_state()
-            except (asyncio.TimeoutError, HomeAssistantError):
-                _LOGGER.debug("Initial state probe timed out or failed; will retry later")
+    def _cancel_relock_task(self) -> None:
+        """Cancel any pending relock task."""
+        if self._relock_task and not self._relock_task.done():
+            self._relock_task.cancel()
 
-        if self._door_status_supported:
-            self.async_on_remove(async_track_time_interval(self.hass, self._poll_state, _POLL_INTERVAL))
-
-    async def _poll_state(self, _now: Any = None) -> None:
+    async def _poll_state(
+        self, _now: datetime | None = None, force: bool = False
+    ) -> None:
         """Read door state via TLV_INFO and update HA state."""
+        _LOGGER.debug("Polling lock state, current available: %s", self._attr_available)
+        if self._door_status_supported is False and _now is not None and not force:
+            return
+
         if self._ble_lock.locked():
             _LOGGER.debug("Skipping poll cycle — BLE operation already in progress")
             return
 
+        if not (
+            ble_device := async_ble_device_from_address(
+                self.hass,
+                self._entry.data[CONF_ADDRESS],
+                connectable=True,
+            )
+        ):
+            if self._attr_available:
+                _LOGGER.info("Lock is unavailable: device not found")
+                self._attr_available = False
+                self.async_write_ha_state()
+            return
+
         try:
             async with self._ble_lock:
-                # Re-read BLE device just in case it moved/changed
-                self.client.update_ble_device(
-                    async_ble_device_from_address(self.hass, self._entry.data[CONF_ADDRESS], connectable=True)
-                )
+                self.client.update_ble_device(ble_device)
                 state: LockState = await self.client.read_state()
-        except (IseoConnectionError, IseoAuthError) as exc:
-            _LOGGER.debug("State poll failed: %s", exc)
-            return
-        except Exception as exc:
-            _LOGGER.debug("Unexpected error during state poll: %s", exc)
+        except (TimeoutError, IseoConnectionError, IseoAuthError, OSError) as exc:
+            if self._attr_available:
+                _LOGGER.info("Lock is unavailable: %s", exc)
+                self._attr_available = False
+                self.async_write_ha_state()
             return
 
-        # Update firmware version in device registry on first successful read.
+        if not self._attr_available:
+            _LOGGER.info("Lock is back online")
+            self._attr_available = True
+
+        self._apply_state(state)
+
         if not self._fw_version_set and state.firmware_info:
             fw_version = state.firmware_info[5:].strip() or state.firmware_info.strip()
-            self._attr_device_info = DeviceInfo(
-                identifiers={(DOMAIN, self._entry.entry_id)},
-                name="ISEO Lock",
-                manufacturer="ISEO",
-                model="X1R Smart Lock",
-                sw_version=fw_version,
-            )
-            self._fw_version_set = True
-            _LOGGER.debug("Firmware version: %s", fw_version)
+            dev_reg = dr.async_get(self.hass)
+            if device := dev_reg.async_get_device(
+                identifiers={(DOMAIN, cast(str, self._entry.unique_id))}
+            ):
+                dev_reg.async_update_device(device.id, sw_version=fw_version)
+                self._fw_version_set = True
 
         if state.door_closed is None:
-            # Lock does not expose a door sensor — no point polling further.
             if self._door_status_supported is not False:
                 _LOGGER.debug("Door status not supported; polling disabled")
                 self._door_status_supported = False
+                if self._poll_unsub:
+                    self._poll_unsub()
+                    self._poll_unsub = None
+            self.async_write_ha_state()
             return
 
         self._door_status_supported = True
 
-        # Don't override state while an unlock command is in flight, or while we're
-        # within the post-unlock suppression window (door sensor may still read closed).
         if self._attr_is_unlocking:
+            self.async_write_ha_state()
             return
-        if self._poll_suppress_until and datetime.now(tz=timezone.utc) < self._poll_suppress_until:
+        if (
+            not force
+            and self._poll_suppress_until
+            and datetime.now(tz=UTC) < self._poll_suppress_until
+        ):
+            self.async_write_ha_state()
             return
 
         new_locked = state.door_closed
         if new_locked != self._attr_is_locked:
             self._attr_is_locked = new_locked
-            self.async_write_ha_state()
+        self.async_write_ha_state()
 
-    # ── State helpers ──────────────────────────────────────────────────────
-    def _set_unlocking(self) -> None:
+    def _set_unlocking(self, available: bool = True) -> None:
         self._attr_is_locked = False
         self._attr_is_unlocking = True
+        self._attr_available = available
         self.async_write_ha_state()
 
-    def _set_unlocked(self) -> None:
+    def _set_unlocked(self, available: bool = True) -> None:
         self._attr_is_unlocking = False
         self._attr_is_locked = False
-        # Suppress polls for a few seconds so the door sensor has time to reflect the open state.
-        self._poll_suppress_until = datetime.now(tz=timezone.utc) + timedelta(seconds=_RELOCK_DELAY)
+        self._attr_available = available
+        self._poll_suppress_until = datetime.now(tz=UTC) + timedelta(
+            seconds=_RELOCK_DELAY
+        )
         self.async_write_ha_state()
 
-    def _set_locked(self) -> None:
+    def _set_locked(self, available: bool = True) -> None:
         self._attr_is_unlocking = False
         self._attr_is_locked = True
+        self._attr_available = available
         self._poll_suppress_until = None
         self.async_write_ha_state()
 
     async def _auto_relock(self) -> None:
         """Revert to 'locked' after the motor has re-latched."""
         try:
-            # If the lock has a door sensor, we don't force a locked state.
-            # We wait for the sensor to report 'closed' via polling.
             if self._door_status_supported:
-                _LOGGER.debug("Door status supported; skipping timer-based auto-relock")
-                # Trigger a poll soon to catch the new state
                 await asyncio.sleep(2)
-                await self._poll_state()
+                await self._poll_state(force=True)
+                if not self._attr_is_locked:
+                    self._set_locked(available=self._attr_available)
                 return
 
             await asyncio.sleep(_RELOCK_DELAY)
-            self._set_locked()
+            self._set_locked(available=self._attr_available)
         except asyncio.CancelledError:
-            # Intentional: a new unlock() call cancels the previous relock timer.
             pass
 
-    # ── LockEntity interface ───────────────────────────────────────────────
+    async def async_lock(self, **kwargs: Any) -> None:
+        """Lock the door (not supported)."""
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="lock_not_supported",
+        )
+
     async def async_unlock(self, **kwargs: Any) -> None:
         """Open the lock (momentary actuator — always re-latches automatically)."""
         if self._relock_task and not self._relock_task.done():
@@ -230,45 +366,35 @@ class IseoLockEntity(CoordinatorEntity[IseoAdvertisementCoordinator], LockEntity
 
         self._set_unlocking()
 
+        if not (
+            ble_device := async_ble_device_from_address(
+                self.hass,
+                self._entry.data[CONF_ADDRESS],
+                connectable=True,
+            )
+        ):
+            self._set_locked(available=False)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+            )
+
         try:
             async with self._ble_lock:
-                # Re-read BLE device just in case it moved/changed
-                self.client.update_ble_device(
-                    async_ble_device_from_address(self.hass, self._entry.data[CONF_ADDRESS], connectable=True)
-                )
-                if self._user_subtype == UserSubType.BT_GATEWAY:
-                    # Use credential-less remote opening.
-                    # Try to identify the HA user and map it to an Argo name.
-                    remote_name = "Home Assistant"
-                    if self._context and self._context.user_id:
-                        coordinator = self.hass.data[DOMAIN][self._entry.entry_id]["coordinator"]
-                        user_map: dict[str, str] = self._entry.options.get(CONF_USER_MAP, {})
-
-                        # Find the Argo UUID mapped to this HA user ID
-                        # user_map is {uuid_hex: ha_user_id}
-                        argo_uuid = next((u for u, h in user_map.items() if h == self._context.user_id), None)
-                        if argo_uuid:
-                            # Resolve the UUID to a friendly name from the lock's whitelist
-                            remote_name = coordinator.user_dir.get(argo_uuid.lower(), f"User {argo_uuid[:8]}")
-
-                    await self.client.gw_open(remote_user_name=remote_name)
-                else:
-                    await self.client.open_lock()
+                self.client.update_ble_device(ble_device)
+                await self.client.gw_open(remote_user_name="Home Assistant")
         except IseoAuthError as exc:
             self._set_locked()
             raise HomeAssistantError(
-                f"Lock rejected identity: {exc}. Ensure the UUID is registered in the Argo app."
+                translation_domain=DOMAIN,
+                translation_key="lock_rejected_identity",
             ) from exc
-        except (IseoConnectionError, asyncio.TimeoutError) as exc:
-            self._set_locked()
-            raise HomeAssistantError(f"Could not connect to lock: {exc}") from exc
+        except (TimeoutError, IseoConnectionError, OSError) as exc:
+            self._set_locked(available=False)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+            ) from exc
 
         self._set_unlocked()
         self._relock_task = self.hass.async_create_task(self._auto_relock())
-
-    async def async_lock(self, **kwargs: Any) -> None:
-        """
-        Not supported — the ISEO X1R re-latches physically after every open.
-        Do nothing and let the next poll reflect the real state.
-        """
-        _LOGGER.debug("async_lock called on ISEO lock — no-op (lock re-latches automatically)")

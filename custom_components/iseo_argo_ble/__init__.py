@@ -2,174 +2,56 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
-
-import voluptuous as vol
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, derive_private_key
+from iseo_argo_ble import IseoClient
+
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers import entity_platform
-from homeassistant.helpers.typing import ConfigType
-
-from iseo_argo_ble import IseoAuthError, IseoClient, IseoConnectionError, UserSubType
 
 from .const import (
     CONF_ADDRESS,
     CONF_PRIV_SCALAR,
-    CONF_USER_SUBTYPE,
     CONF_UUID,
     DEFAULT_USER_SUBTYPE,
     DOMAIN,
     PLATFORMS,
 )
-from .coordinator import IseoAdvertisementCoordinator, IseoLogCoordinator
 
-_LOGGER = logging.getLogger(__name__)
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up the ISEO Argo BLE Lock component."""
-
-    async def _client_for_entry(config_entry_id: str) -> IseoClient:
-        """Resolve a config entry by ID and return a ready IseoClient."""
-        entry = hass.config_entries.async_get_entry(config_entry_id)
-        if entry is None or entry.domain != DOMAIN:
-            raise vol.Invalid(f"Config entry {config_entry_id!r} not found.")
-        entry_data = hass.data.get(DOMAIN, {}).get(config_entry_id)
-        if entry_data is None:
-            raise vol.Invalid(f"ISEO lock {config_entry_id!r} is not loaded.")
-
-        priv = entry_data["priv"]
-        return IseoClient(
-            address=entry.data[CONF_ADDRESS],
-            uuid_bytes=bytes.fromhex(entry.data[CONF_UUID]),
-            identity_priv=priv,
-            subtype=entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE),
-            ble_device=async_ble_device_from_address(hass, entry.data[CONF_ADDRESS], connectable=True),
-        )
-
-    async def handle_read_users(call: ServiceCall):
-        """Fetch the complete list of registered users from the lock."""
-        client = await _client_for_entry(call.data["config_entry_id"])
-        users = await client.read_users()
-        return {
-            "users": [
-                {
-                    "uuid": u.uuid_hex.upper(),
-                    "name": u.name,
-                    "type": u.user_type,
-                    "subtype": u.inner_subtype,
-                }
-                for u in users
-            ]
-        }
-
-    async def handle_delete_user(call: ServiceCall):
-        """Remove a user from the lock's whitelist."""
-        target_uuid_hex = call.data["uuid"]
-        client = await _client_for_entry(call.data["config_entry_id"])
-
-        # Step 1: Fetch users to find the correct type and subtype
-        users = await client.read_users()
-        target_user = next((u for u in users if u.uuid_hex.lower() == target_uuid_hex.lower()), None)
-
-        if not target_user:
-            raise vol.Invalid(f"User with UUID {target_uuid_hex} not found on lock.")
-
-        subtype = target_user.inner_subtype or UserSubType.BT_SMARTPHONE
-
-        # Step 2: Delete using the actual user type read from the lock
-        await client.erase_user_by_uuid(
-            uuid_bytes=bytes.fromhex(target_uuid_hex),
-            user_type=target_user.user_type,
-            subtype=subtype,
-        )
-
-    _ENTRY_ID_SCHEMA = {vol.Required("config_entry_id"): cv.string}
-
-    hass.services.async_register(
-        DOMAIN,
-        "read_users",
-        handle_read_users,
-        schema=vol.Schema(_ENTRY_ID_SCHEMA),
-        supports_response=entity_platform.SupportsResponse.ONLY,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        "delete_user",
-        handle_delete_user,
-        schema=vol.Schema(
-            {
-                **_ENTRY_ID_SCHEMA,
-                vol.Required("uuid"): cv.string,
-            }
-        ),
-    )
-
-    return True
+type IseoConfigEntry = ConfigEntry[IseoClient]
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool:
     """Set up ISEO Argo BLE Lock from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
+    address = entry.data[CONF_ADDRESS]
+    ble_device = async_ble_device_from_address(hass, address, connectable=True)
+    if ble_device is None:
+        raise ConfigEntryNotReady(
+            f"Could not find ISEO lock {address} — is it powered on and in range?"
+        )
 
-    # Derive the private key once (CPU-bound; run in executor).
     priv_int = int(entry.data[CONF_PRIV_SCALAR], 16)
-    priv = await hass.async_add_executor_job(derive_private_key, priv_int, SECP224R1(), default_backend())
+    priv = await hass.async_add_executor_job(derive_private_key, priv_int, SECP224R1())
     uuid_bytes = bytes.fromhex(entry.data[CONF_UUID])
-    subtype = entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE)
 
-    coordinator = IseoLogCoordinator(hass, entry, uuid_bytes, priv, subtype)
-    await coordinator.async_config_entry_first_refresh()  # initial poll
+    client = IseoClient(
+        address=address,
+        uuid_bytes=uuid_bytes,
+        identity_priv=priv,
+        subtype=DEFAULT_USER_SUBTYPE,
+        ble_device=ble_device,
+    )
 
-    adv_coordinator = IseoAdvertisementCoordinator(hass, entry.data[CONF_ADDRESS])
-    await adv_coordinator.async_setup()
-
-    hass.data[DOMAIN][entry.entry_id] = {
-        "coordinator": coordinator,
-        "adv_coordinator": adv_coordinator,
-        "priv": priv,
-    }
+    entry.runtime_data = client
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry. Best-effort unregister from lock if it's a Gateway."""
-    # 1. Stop advertisement listener
-    entry_data = hass.data[DOMAIN].get(entry.entry_id)
-    if entry_data and (adv_coord := entry_data.get("adv_coordinator")):
-        adv_coord.async_stop()
-
-    # 2. Attempt best-effort cleanup on the physical lock
-    try:
-        priv = hass.data[DOMAIN][entry.entry_id]["priv"]
-        address = entry.data[CONF_ADDRESS]
-        uuid_bytes = bytes.fromhex(entry.data[CONF_UUID])
-        subtype = entry.data.get(CONF_USER_SUBTYPE, DEFAULT_USER_SUBTYPE)
-
-        client = IseoClient(
-            address=address,
-            uuid_bytes=uuid_bytes,
-            identity_priv=priv,
-            subtype=subtype,
-            ble_device=async_ble_device_from_address(hass, address, connectable=True),
-        )
-
-        if subtype == UserSubType.BT_GATEWAY:
-            _LOGGER.debug("Best-effort unregistering gateway from lock %s", address)
-            async with asyncio.timeout(35):
-                await client.erase_user()
-    except (IseoConnectionError, IseoAuthError, asyncio.TimeoutError) as exc:
-        _LOGGER.debug("Best-effort lock cleanup failed (ignoring): %s", exc)
-
-    # 2. Unload platforms and data
-    ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-    return ok
+async def async_unload_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool:
+    """Unload a config entry."""
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

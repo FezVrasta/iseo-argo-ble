@@ -94,24 +94,15 @@ def parse_iseo_advertisement(service_uuids: list[str]) -> LockState | None:
         _LOGGER.debug("No ISEO marker (0xF0xx) found in UUIDs: %s", [hex(s) for s in shorts])
         return None
 
-    # Find the System State UUIDs (prefixed with 0xE000).
-    # We aggregate all of them by OR-ing the bits, as the state might be split or repeated.
-    state_uuids = [s for s in shorts if (s & 0xF000) == 0xE000]
+    # Find the System State UUID (prefixed with 0xE000).
+    # We no longer use index + 3 because some scanners (like HA's) reorder the UUID list.
+    state_val = next((s for s in shorts if (s & 0xF000) == 0xE000), None)
 
-    if not state_uuids:
+    if state_val is None:
         _LOGGER.debug("No ISEO state (0xE000) found in UUIDs: %s", [hex(s) for s in shorts])
         return None
 
-    state_val = 0
-    for s in state_uuids:
-        state_val |= s
-
-    _LOGGER.debug(
-        "Parsing ISEO advertisement: marker=%s, state=%s (from %d UUIDs)",
-        hex(marker_val),
-        hex(state_val),
-        len(state_uuids),
-    )
+    _LOGGER.debug("Parsing ISEO advertisement: marker=%s, state=%s", hex(marker_val), hex(state_val))
 
     door_closed = bool(state_val & _STATE_DOOR_CLOSED)
     battery_level = (state_val >> _STATE_BATTERY_SHIFT) & _STATE_BATTERY_MASK
