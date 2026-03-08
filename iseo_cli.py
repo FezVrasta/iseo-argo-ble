@@ -18,6 +18,8 @@ Commands
   users   [address]           List all enrolled users (requires admin rights).
   identity                    Show the current identity UUID.
   new-identity                Generate a new UUID + keypair and save it.
+  make-admin       [address]  Grant admin rights to a user (allows login).
+  remove-admin     [address]  Remove admin rights from a user.
   register-gateway [address]  Register identity as a Gateway (requires master password).
   register-pin     [address]  Register/Update a PIN user (requires master password).
   disable-user     [address]  Disable a user (blocks access without deleting).
@@ -383,6 +385,38 @@ async def cmd_register_pin(args: argparse.Namespace) -> None:
         sys.exit(f"Registration failed: {exc}")
 
     print(f"Success! PIN user '{args.name or args.pin}' registered.")
+
+
+async def cmd_set_admin(args: argparse.Namespace) -> None:
+    """Grant or revoke admin rights for a user."""
+    uuid_bytes, priv, stored_address = _load_identity(args.identity)
+    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
+
+    client = IseoClient(
+        address=address,
+        uuid_bytes=uuid_bytes,
+        identity_priv=priv,
+        subtype=args.subtype,
+    )
+
+    admin = args.command == "make-admin"
+    action = "Granting" if admin else "Revoking"
+    print(f"Connecting to {address} to {action.lower()} admin rights for user {args.uuid} …")
+    try:
+        await client.set_user_admin(
+            uuid_hex=args.uuid,
+            user_type=args.user_type,
+            admin=admin,
+            connect_timeout=args.timeout,
+            master_password=args.password,
+            skip_login=args.master,
+        )
+    except ValueError as exc:
+        sys.exit(f"User not found on the lock: {exc}")
+    except Exception as exc:
+        sys.exit(f"Operation failed: {exc}")
+
+    print(f"Success! User {args.uuid} admin rights {'granted' if admin else 'revoked'}.")
 
 
 async def cmd_disable_user(args: argparse.Namespace) -> None:
@@ -829,6 +863,8 @@ def _build_parser() -> argparse.ArgumentParser:
     for cmd, help_text in [
         ("disable-user", "Disable a user (blocks access without deleting)"),
         ("enable-user", "Re-enable a previously disabled user"),
+        ("make-admin", "Grant admin rights to a user (allows login)"),
+        ("remove-admin", "Remove admin rights from a user"),
     ]:
         p = sub.add_parser(cmd, help=help_text)
         p.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
@@ -887,6 +923,8 @@ def main() -> None:
         "users": cmd_users,
         "register-gateway": cmd_register_gateway,
         "register-pin": cmd_register_pin,
+        "make-admin": cmd_set_admin,
+        "remove-admin": cmd_set_admin,
         "disable-user": cmd_disable_user,
         "enable-user": cmd_enable_user,
         "erase-identity": cmd_erase_identity,

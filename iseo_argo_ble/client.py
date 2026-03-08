@@ -1353,8 +1353,9 @@ class IseoClient:
             _tlv(0, bytes([self._subtype]))
             + _tlv(1, self._uuid_bytes)
             + _tlv(2, name.encode("utf-8"))
-            # Tag 3: Options (MasterLogin + Privacy + Passage)
-            + _tlv(3, bytes([0x70]))
+            # Tag 3: Options (VIP + Privacy + MasterLogin + Passage)
+            # Bit 0=VIP, 4=Privacy, 5=MasterLogin, 6=Passage. 0x71 = all set.
+            + _tlv(3, bytes([0x71]))
             # Tag 4: CreationTs
             + _tlv(4, struct.pack(">I", int(time.time())))
             + _tlv(32, pub_key)
@@ -1559,6 +1560,96 @@ class IseoClient:
         _LOGGER.info(
             "PIN user %s registered successfully on lock %s", pin_uuid_bytes.hex(), self._address
         )
+
+    async def set_user_admin(
+        self,
+        uuid_hex: str,
+        user_type: int,
+        admin: bool,
+        connect_timeout: float = 20.0,
+        master_password: str | None = None,
+        skip_login: bool = False,
+    ) -> None:
+        """
+        Enable or disable admin rights (MasterLogin) for any enrolled user.
+
+        Reads the raw user TLV, toggles bit 5 (0x20) in Tag 3 (Options),
+        and writes it back via opcode 38.
+        """
+        _LOGGER.debug("set_user_admin(%s, type=%d, admin=%s)", uuid_hex, user_type, admin)
+        async with self._connected_client(connect_timeout) as client:
+            await client.start_notify(_S2C_UUID, self._on_notify)
+            await self._handshake(client)
+            try:
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
+            except asyncio.TimeoutError:
+                pass
+            await self._exchange_info(client)
+
+            if not skip_login:
+                if master_password:
+                    await self.master_login(client, master_password)
+                else:
+                    login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
+                    await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
+                    await self._recv_sbt(timeout=_TIMEOUT_OP)
+
+            # Read all users within the same connection to get raw inner TLV bytes.
+            users_raw: list[tuple[int, bytes]] = []
+            fetch_start = 0
+            while True:
+                req = struct.pack(">HH", fetch_start, 0xFFFF)
+                await self._send_sbt(client, _OP_TLV_READ_USER_BLOCK, req)
+                try:
+                    sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
+                except asyncio.TimeoutError as exc:
+                    raise IseoConnectionError("Timed out reading user block from lock") from exc
+                if sbt.get("status", 0) != _SBT_STATUS_OK:
+                    break
+                raw = sbt.get("payload", b"")
+                if len(raw) < 3:
+                    break
+                page_count = raw[0]
+                remaining = struct.unpack_from(">H", raw, 1)[0]
+                for outer_tag, inner_bytes in _parse_tlv_list(raw[3:]):
+                    if outer_tag in _USER_TYPE_RANGE:
+                        users_raw.append((outer_tag, inner_bytes))
+                fetch_start += page_count
+                if remaining == 0 or page_count == 0:
+                    break
+
+            match = next(
+                (raw for ut, raw in users_raw if ut == user_type and _parse_tlv(raw).get(1, b"").hex() == uuid_hex),
+                None,
+            )
+            if match is None:
+                raise ValueError(f"User {uuid_hex} (type {user_type}) not found on lock")
+
+            # Rebuild inner TLV in SDK-defined tag order (SbtUserDataTlvCodec.java).
+            tags = dict(_parse_tlv_list(match))
+            options = tags.get(3, b"\x00")[0]
+            if admin:
+                options |= 0x20  # Set bit 5: masterLoginEnabled
+            else:
+                options &= ~0x20  # Clear bit 5
+
+            tags[3] = bytes([options])
+
+            ordered_tags = [(t, tags[t]) for t in _USER_TLV_TAG_ORDER if t in tags]
+            inner = b"".join(_tlv(t, v) for t, v in ordered_tags)
+            user_tlv = _tlv(user_type, inner)
+
+            await self._send_sbt(client, _OP_TLV_STORE_USER_BLOCK, user_tlv)
+            try:
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
+            except asyncio.TimeoutError as exc:
+                raise IseoConnectionError("No response to set_user_admin") from exc
+
+            status = sbt.get("status", 0)
+            if status == 5:
+                raise IseoAuthError("Master Mode Required")
+            if status != _SBT_STATUS_OK:
+                raise IseoAuthError(f"set_user_admin failed with status={status}")
 
     async def set_user_disabled(
         self,
