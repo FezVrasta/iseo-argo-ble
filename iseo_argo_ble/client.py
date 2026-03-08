@@ -88,24 +88,21 @@ def parse_iseo_advertisement(service_uuids: list[str]) -> LockState | None:
                 continue
 
     # Find the F0xx marker index
-    marker_idx = None
-    for i, val in enumerate(shorts):
-        if (val & 0xFFC0) == 0xF000:
-            marker_idx = i
-            break
+    marker_val = next((s for s in shorts if (s & 0xFFC0) == 0xF000), None)
 
-    if marker_idx is None:
+    if marker_val is None:
+        _LOGGER.debug("No ISEO marker (0xF0xx) found in UUIDs: %s", [hex(s) for s in shorts])
         return None
 
-    # System state is at index +3 (DefaultSbtBtAdvertisingParser.java)
-    state_idx = marker_idx + 3
-    if state_idx >= len(shorts):
+    # Find the System State UUID (prefixed with 0xE000).
+    # We no longer use index + 3 because some scanners (like HA's) reorder the UUID list.
+    state_val = next((s for s in shorts if (s & 0xF000) == 0xE000), None)
+
+    if state_val is None:
+        _LOGGER.debug("No ISEO state (0xE000) found in UUIDs: %s", [hex(s) for s in shorts])
         return None
 
-    state_val = shorts[state_idx]
-    # SbtDeviceSystemStateCodec check: (val & 0xF000) == 0xE000 (57344)
-    if (state_val & 0xF000) != 0xE000:
-        return None
+    _LOGGER.debug("Parsing ISEO advertisement: marker=%s, state=%s", hex(marker_val), hex(state_val))
 
     door_closed = bool(state_val & _STATE_DOOR_CLOSED)
     battery_level = (state_val >> _STATE_BATTERY_SHIFT) & _STATE_BATTERY_MASK

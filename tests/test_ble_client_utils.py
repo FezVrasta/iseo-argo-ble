@@ -81,6 +81,32 @@ def test_parse_iseo_advertisement():
     # Test missing state (list too short)
     assert parse_iseo_advertisement(uuids[:3]) is None
 
+
+def test_parse_iseo_advertisement_robustness():
+    # Test reordered UUIDs (state at index 1, marker at index 3)
+    uuids = [
+        "random-uuid-1",
+        "0000e840-0000-1000-8000-00805f9b34fb",  # state: closed, battery OK
+        "random-uuid-2",
+        "0000f001-0000-1000-8000-00805f9b34fb",  # marker
+    ]
+    state = parse_iseo_advertisement(uuids)
+    assert state is not None
+    assert state.door_closed is True
+    assert state.battery_level == 2
+
+    # Test state present but marker missing
+    uuids = [
+        "0000e840-0000-1000-8000-00805f9b34fb",
+    ]
+    assert parse_iseo_advertisement(uuids) is None
+
+    # Test marker present but state missing
+    uuids = [
+        "0000f001-0000-1000-8000-00805f9b34fb",
+    ]
+    assert parse_iseo_advertisement(uuids) is None
+
 def test_slip_encode_decode():
     data = b"\x01\x02\xc0\x03\xdb\x04"
     encoded = _slip_encode(data)

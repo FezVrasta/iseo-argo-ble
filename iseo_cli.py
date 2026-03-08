@@ -8,6 +8,7 @@ and lets you talk to the lock without Home Assistant.
 Commands
 --------
   scan                        List nearby BLE devices (sorted by RSSI).
+  monitor [address]           Listen for BLE advertisements and show status changes.
   open    [address]           Send TLV_OPEN — opens the lock.
   gw-open [address]           Send TLV_OPEN (Gateway mode) — credential-less opening.
   status  [address]           Read TLV_INFO — show door open/closed state.
@@ -53,8 +54,9 @@ try:
         MasterAuthError,
         UserSubType,
         is_iseo_advertisement,
+        parse_iseo_advertisement,
     )
-    from iseo_argo_ble.client import bcd_encode_pin
+    from iseo_argo_ble.client import BATTERY_LEVEL_LABELS, bcd_encode_pin
 except ImportError:
     # Fallback to local project root if not installed as a package.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -65,8 +67,9 @@ except ImportError:
         MasterAuthError,
         UserSubType,
         is_iseo_advertisement,
+        parse_iseo_advertisement,
     )
-    from iseo_argo_ble.client import bcd_encode_pin
+    from iseo_argo_ble.client import BATTERY_LEVEL_LABELS, bcd_encode_pin
 
 if TYPE_CHECKING:
     pass
@@ -76,6 +79,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import ec
 
 _DEFAULT_IDENTITY = Path(__file__).resolve().parent / "iseo_identity.json"
+_LOGGER = logging.getLogger(__name__)
 
 
 # ── Identity helpers ──────────────────────────────────────────────────────────
@@ -139,6 +143,78 @@ async def cmd_scan(_args: argparse.Namespace) -> None:
     print("-" * 50)
     for rssi, addr, name in rows:
         print(f"{rssi:>6} dBm  {addr}  {name}")
+
+
+async def cmd_monitor(args: argparse.Namespace) -> None:
+    """Listen for BLE advertisements and show status changes."""
+    uuid_bytes, priv, stored_address = _load_identity(args.identity)
+    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
+
+    # Normalize address for comparison (remove dashes and colons)
+    norm_target = address.replace("-", "").replace(":", "").lower()
+
+    print(f"Monitoring advertisements from {address} …")
+    print("Hint: use  --debug  to see parsing details if no status is shown.")
+    print("Press Ctrl+C to stop.\n")
+
+    seen_other_iseo = set()
+
+    def callback(device, advertisement_data):
+        norm_addr = device.address.replace("-", "").replace(":", "").lower()
+        is_iseo = is_iseo_advertisement(list(advertisement_data.service_uuids))
+
+        if is_iseo and norm_addr != norm_target:
+            if device.address not in seen_other_iseo:
+                seen_other_iseo.add(device.address)
+                _LOGGER.info("Found other ISEO lock: %s (%s)", device.address, device.name or "Unknown")
+
+        if norm_addr != norm_target:
+            return
+
+        uuids = list(advertisement_data.service_uuids)
+        mdata = advertisement_data.manufacturer_data
+        _LOGGER.debug("Received advertisement from %s: UUIDs=%s, MData=%s", device.address, uuids, mdata)
+
+        state = parse_iseo_advertisement(uuids)
+        if state is None:
+            return
+
+        door = "CLOSED" if state.door_closed else "OPEN"
+        bat_val = state.battery_level
+        bat = BATTERY_LEVEL_LABELS.get(bat_val, f"Unknown ({bat_val})") if bat_val is not None else "Unknown"
+        modes = []
+        if state.privacy_mode:
+            modes.append("Privacy")
+        if state.passage_mode_normal:
+            modes.append("Passage (N)")
+        if state.passage_mode_light:
+            modes.append("Passage (L)")
+        if state.vip_mode:
+            modes.append("VIP")
+
+        op_modes = ["Standard", "Office", "Timed"]
+        op_val = state.operational_mode
+        if op_val is not None:
+            op = op_modes[op_val] if op_val < len(op_modes) else str(op_val)
+        else:
+            op = "Unknown"
+
+        print(f"Status: {door:<6} | Bat: {bat:<15} | Op: {op:<8} | Modes: {', '.join(modes)}")
+
+    stop_event = asyncio.Event()
+
+    async def run():
+        scanner = BleakScanner(callback)
+        await scanner.start()
+        try:
+            await stop_event.wait()
+        finally:
+            await scanner.stop()
+
+    try:
+        await run()
+    except KeyboardInterrupt:
+        stop_event.set()
 
 
 async def cmd_open(args: argparse.Namespace) -> None:
@@ -679,6 +755,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("scan", help="List nearby BLE devices sorted by RSSI")
 
+    p_monitor = sub.add_parser("monitor", help="Listen for BLE advertisements and show status changes")
+    p_monitor.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
+
     p_open = sub.add_parser("open", help="Open the lock")
     p_open.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
 
@@ -796,6 +875,7 @@ def main() -> None:
 
     async_cmds = {
         "scan": cmd_scan,
+        "monitor": cmd_monitor,
         "open": cmd_open,
         "gw-open": cmd_gw_open,
         "gw-logs": cmd_gw_logs,
