@@ -257,15 +257,14 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> IseoOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return IseoOptionsFlowHandler(config_entry)
+        return IseoOptionsFlowHandler()
 
 
 class IseoOptionsFlowHandler(OptionsFlow):
     """Handle options flow for ISEO Argo BLE Lock."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
+    def __init__(self) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
         self._user_key_map: dict[str, str] = {}
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
