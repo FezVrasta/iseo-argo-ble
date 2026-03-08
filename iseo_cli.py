@@ -329,6 +329,13 @@ async def cmd_register_gateway(args: argparse.Namespace) -> None:
         subtype=UserSubType.BT_GATEWAY,
     )
 
+    # Optionally generate and register an admin BT_SMARTPHONE identity in the same session.
+    admin_priv: ec.EllipticCurvePrivateKey | None = None
+    admin_uuid: bytes | None = None
+    if args.register_admin:
+        admin_priv = ec.generate_private_key(ec.SECP224R1(), default_backend())
+        admin_uuid = uuid_module.uuid4().bytes
+
     print(f"Connecting to {address} to perform full Gateway setup …")
     print("Hint: When prompted by the lock (LED blinking), scan your physical Master Card.")
 
@@ -338,6 +345,8 @@ async def cmd_register_gateway(args: argparse.Namespace) -> None:
             name=args.name,
             connect_timeout=args.timeout,
             enable_door_status=args.enable_door_status,
+            admin_uuid_bytes=admin_uuid,
+            admin_identity_priv=admin_priv,
         )
     except MasterAuthError as exc:
         sys.exit(f"Master login failed: {exc}. Check your admin password.")
@@ -347,7 +356,63 @@ async def cmd_register_gateway(args: argparse.Namespace) -> None:
     print(
         f"Success! Identity {uuid_bytes.hex().upper()} registered as Gateway '{args.name}' with log notifications enabled."
     )
+    if admin_uuid and admin_priv:
+        out_path = args.admin_output or args.identity.with_suffix(".admin.json")
+        _save_identity(out_path, admin_uuid, admin_priv, address)
+        print(f"Admin identity registered and saved to: {out_path}")
+        print(f"Admin UUID: {admin_uuid.hex()}")
     print("You can now use:  iseo_cli.py gw-open")
+
+
+async def cmd_register_admin(args: argparse.Namespace) -> None:
+    """Register a new BT_SMARTPHONE admin identity, authenticated as the current identity."""
+    new_priv = ec.generate_private_key(ec.SECP224R1(), default_backend())
+    new_uuid = uuid_module.uuid4().bytes
+
+    try:
+        if args.master:
+            # Master Mode: only use identity file for the address, register new identity as itself.
+            address = args.address
+            if not address:
+                stored = json.loads(args.identity.read_text()) if args.identity.exists() else {}
+                address = stored.get("address")
+            if not address:
+                sys.exit("Error: No lock address provided and none stored in identity file.")
+            print(f"Connecting to {address} to register new admin identity (Master Mode — scan your Master Card now) …")
+            new_client = IseoClient(
+                address=address,
+                uuid_bytes=new_uuid,
+                identity_priv=new_priv,
+                subtype=UserSubType.BT_SMARTPHONE,
+            )
+            await new_client.register_user(name=args.name, connect_timeout=args.timeout)
+        else:
+            uuid_bytes, priv, stored_address = _load_identity(args.identity)
+            address = _get_effective_address(args, uuid_bytes, priv, stored_address)
+            print(f"Connecting to {address} to register new admin identity …")
+            caller_client = IseoClient(
+                address=address,
+                uuid_bytes=uuid_bytes,
+                identity_priv=priv,
+                subtype=args.subtype,
+            )
+            await caller_client.register_user_as(
+                new_uuid_bytes=new_uuid,
+                new_identity_priv=new_priv,
+                new_subtype=UserSubType.BT_SMARTPHONE,
+                name=args.name,
+                connect_timeout=args.timeout,
+            )
+    except IseoAuthError as exc:
+        sys.exit(f"Auth failed: {exc}\nMake sure {'you scanned the Master Card first' if args.master else 'your identity has admin (Login+VIP) privileges'}.")
+    except Exception as exc:
+        sys.exit(f"Registration failed: {exc}")
+
+    out_path = args.output or args.identity.with_suffix(".admin.json")
+    _save_identity(out_path, new_uuid, new_priv, address)
+    print(f"Success! New admin identity registered as '{args.name}'.")
+    print(f"Saved to: {out_path}")
+    print(f"UUID: {new_uuid.hex()}")
 
 
 async def cmd_register_pin(args: argparse.Namespace) -> None:
@@ -860,6 +925,28 @@ def _build_parser() -> argparse.ArgumentParser:
     p_reg_gw.add_argument(
         "--enable-door-status", action="store_true", help="Enable Door Status Advice flag on the lock"
     )
+    p_reg_gw.add_argument(
+        "--register-admin", action="store_true", help="Also register a BT_SMARTPHONE admin identity in the same session"
+    )
+    p_reg_gw.add_argument(
+        "--admin-output", metavar="PATH", type=Path, default=None,
+        help="Where to save the admin identity JSON (default: <identity>.admin.json)",
+    )
+
+    p_reg_admin = sub.add_parser(
+        "register-admin",
+        help="Register a new admin identity using your current identity's privileges",
+    )
+    p_reg_admin.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
+    p_reg_admin.add_argument("--name", default="HA Admin", help="Name for the new admin user (default: HA Admin)")
+    p_reg_admin.add_argument(
+        "--output",
+        metavar="PATH",
+        type=Path,
+        default=None,
+        help="Where to save the new admin identity JSON (default: <identity>.admin.json)",
+    )
+    p_reg_admin.add_argument("--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)")
 
     p_reg_pin = sub.add_parser("register-pin", help="Register/Update a PIN user")
     p_reg_pin.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
@@ -931,6 +1018,7 @@ def main() -> None:
         "logs": cmd_logs,
         "users": cmd_users,
         "register-gateway": cmd_register_gateway,
+        "register-admin": cmd_register_admin,
         "register-pin": cmd_register_pin,
         "make-admin": cmd_set_admin,
         "remove-admin": cmd_set_admin,

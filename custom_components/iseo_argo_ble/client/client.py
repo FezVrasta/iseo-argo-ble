@@ -897,7 +897,10 @@ class IseoClient:
         """
         if self._ble_device is not None and _bleak_establish_connection is not None:
             client = await _bleak_establish_connection(BleakClient, self._ble_device, self._address)
-            yield client
+            try:
+                yield client
+            finally:
+                await client.disconnect()
         else:
             if self._ble_device is None and _bleak_establish_connection is not None:
                 # bleak_retry_connector is available (HA production context) but no BLEDevice
@@ -925,6 +928,10 @@ class IseoClient:
         self._sid = 0
         self._ta = 1
         self._pl_key = _BASE_PL_KEY
+        # Drain any stale packets left over from previous sessions (e.g. proxy cache)
+        self._slip_buf.clear()
+        while not self._rxq.empty():
+            self._rxq.get_nowait()
         self._sig_key = _BASE_SIG_KEY
 
         priv = self._identity_priv
@@ -960,7 +967,12 @@ class IseoClient:
         step2_enc = _shs_encrypt(kb2 + kb0, shs_pl, shs_sig)
         await self._send_csl(client, _FT_SESSION_HANDSHAKE, step2_enc)
 
-        resp2 = await self._recv_csl(timeout=_TIMEOUT_HANDSHAKE)
+        # Skip any replayed packets from the proxy (same ta_num as step 1 response)
+        while True:
+            resp2 = await self._recv_csl(timeout=_TIMEOUT_HANDSHAKE)
+            if resp2["ta_num"] > resp["ta_num"]:
+                break
+            _LOGGER.debug("Discarding replayed packet (ta_num=%d <= %d)", resp2["ta_num"], resp["ta_num"])
         if resp2["frame_type"] == _FT_ERROR:
             err_code = struct.unpack_from(">H", resp2["raw_data"])[0] if len(resp2["raw_data"]) >= 2 else "unknown"
             raise IseoConnectionError(f"Lock rejected handshake (step 3) with CSL error code {err_code}")
@@ -1342,13 +1354,27 @@ class IseoClient:
             raise MasterAuthError(f"Master login failed (status={sbt.get('status')})")
         _LOGGER.debug("Master login accepted")
 
-    async def _register_user_internal(self, client: BleakClient, name: str) -> None:
-        """Internal logic to register ourselves in the whitelist."""
-        pub_key = _pub_to_bytes(self._identity_priv)
+    async def _register_user_internal(
+        self,
+        client: BleakClient,
+        name: str,
+        uuid_bytes: bytes | None = None,
+        identity_priv: ec.EllipticCurvePrivateKey | None = None,
+        subtype: int | None = None,
+    ) -> None:
+        """Internal logic to register a user in the whitelist.
+
+        Uses self's credentials by default; pass explicit values to register a
+        different identity (e.g. an admin BT_SMARTPHONE user) in the same session.
+        """
+        _uuid = uuid_bytes if uuid_bytes is not None else self._uuid_bytes
+        _priv = identity_priv if identity_priv is not None else self._identity_priv
+        _subtype = subtype if subtype is not None else self._subtype
+        pub_key = _pub_to_bytes(_priv)
 
         inner = (
-            _tlv(0, bytes([self._subtype]))
-            + _tlv(1, self._uuid_bytes)
+            _tlv(0, bytes([_subtype]))
+            + _tlv(1, _uuid)
             + _tlv(2, name.encode("utf-8"))
             # Tag 3: Options (VIP + Privacy + MasterLogin + Passage)
             # Bit 0=VIP, 4=Privacy, 5=MasterLogin, 6=Passage. 0x71 = all set.
@@ -1369,6 +1395,8 @@ class IseoClient:
             raise IseoConnectionError("No response to register_user (did you scan the Master Card?)") from exc
 
         status = sbt.get("status", 0)
+        if status == 5:
+            raise IseoAuthError("Master Mode Required: Scan your physical Master Card on the lock first.")
         if status == 68:
             raise IseoAuthError("Invalid user data: The lock rejected this identity payload.")
         if status != _SBT_STATUS_OK:
@@ -1430,16 +1458,23 @@ class IseoClient:
         name: str = "Home Assistant",
         connect_timeout: float = 20.0,
         enable_door_status: bool = False,
+        admin_uuid_bytes: bytes | None = None,
+        admin_identity_priv: ec.EllipticCurvePrivateKey | None = None,
     ) -> None:
         """
         Connect to the lock and perform full Gateway setup in a single session.
         Registers the user and enables log notifications.
         Requires scanning the Master Card once (or master_password).
+
+        If admin_uuid_bytes and admin_identity_priv are provided, also registers
+        a BT_SMARTPHONE admin identity in the same session for user management.
         """
         if self._subtype != UserSubType.BT_GATEWAY:
             raise ValueError("setup_gateway requires BT_GATEWAY subtype")
 
         _LOGGER.debug("Starting full Gateway setup on %s", self._address)
+
+        # Single session: Master Card scan authorises the entire session.
         async with self._connected_client(connect_timeout) as client:
             await client.start_notify(_S2C_UUID, self._on_notify)
             await self._handshake(client)
@@ -1454,17 +1489,73 @@ class IseoClient:
             if master_password:
                 await self.master_login(client, master_password)
 
-            _LOGGER.debug("Step 1/3: Registering user")
+            _LOGGER.debug("Step 1: Registering gateway user")
             await self._register_user_internal(client, name)
 
-            _LOGGER.debug("Step 2/3: Enabling log notifications")
+            _LOGGER.debug("Step 2: Enabling log notifications")
             await self._register_log_notif_internal(client)
 
             if enable_door_status:
-                _LOGGER.debug("Step 3/3: Enabling Door Status Advice")
+                _LOGGER.debug("Step 3: Enabling Door Status Advice")
                 await self._enable_door_status_advice_internal(client)
 
+            if admin_uuid_bytes and admin_identity_priv:
+                _LOGGER.debug("Step 4: Registering admin user in same session")
+                await self._register_user_internal(
+                    client,
+                    f"{name} Admin",
+                    uuid_bytes=admin_uuid_bytes,
+                    identity_priv=admin_identity_priv,
+                    subtype=UserSubType.BT_SMARTPHONE,
+                )
+
         _LOGGER.info("Gateway setup completed successfully (UUID=%s)", self._uuid_bytes.hex())
+
+    async def register_user_as(
+        self,
+        new_uuid_bytes: bytes,
+        new_identity_priv: ec.EllipticCurvePrivateKey,
+        new_subtype: int = UserSubType.BT_SMARTPHONE,
+        name: str = "New User",
+        connect_timeout: float = 20.0,
+        skip_login: bool = False,
+    ) -> None:
+        """
+        Log in as self, then register a different identity on the lock.
+        Requires self to have admin (Login + VIP) privileges.
+        If skip_login is True, assumes lock is already in Master Mode (Master Card scanned).
+        """
+        _LOGGER.debug("Registering new identity %s on lock %s (skip_login=%s)", new_uuid_bytes.hex(), self._address, skip_login)
+        async with self._connected_client(connect_timeout) as client:
+            await client.start_notify(_S2C_UUID, self._on_notify)
+            await self._handshake(client)
+
+            try:
+                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
+            except asyncio.TimeoutError:
+                pass
+
+            await self._exchange_info(client)
+
+            if not skip_login:
+                login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
+                await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
+                try:
+                    login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+                except asyncio.TimeoutError as exc:
+                    raise IseoConnectionError("No response to TLV_LOGIN") from exc
+                if login_resp.get("status", 0) != _SBT_STATUS_OK:
+                    raise IseoAuthError(f"Login failed (status={login_resp.get('status')})")
+
+            await self._register_user_internal(
+                client,
+                name,
+                uuid_bytes=new_uuid_bytes,
+                identity_priv=new_identity_priv,
+                subtype=new_subtype,
+            )
+
+        _LOGGER.info("New identity %s registered successfully", new_uuid_bytes.hex())
 
     async def register_user(
         self,
@@ -1636,6 +1727,7 @@ class IseoClient:
                 if remaining == 0 or page_count == 0:
                     break
 
+            _LOGGER.debug("set_user_disabled: found %d users: %s", len(users_raw), [(ut, _parse_tlv(r).get(1, b"").hex()) for ut, r in users_raw])
             match = next(
                 (raw for ut, raw in users_raw if ut == user_type and _parse_tlv(raw).get(1, b"").hex() == uuid_hex),
                 None,

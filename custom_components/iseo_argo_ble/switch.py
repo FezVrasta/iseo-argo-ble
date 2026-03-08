@@ -8,6 +8,7 @@ from typing import Any
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -111,23 +112,32 @@ class IseoUserSwitch(CoordinatorEntity, SwitchEntity):
 
     async def _set_disabled(self, disabled: bool) -> None:
         """Set the disabled state on the lock."""
-        client = self._entry.runtime_data.client
+        admin_client = self._entry.runtime_data.admin_client
         ble_lock = self._entry.runtime_data.ble_lock
         address = self._entry.data[CONF_ADDRESS]
 
-        if not (ble_device := async_ble_device_from_address(self.hass, address, connectable=True)):
-            _LOGGER.error("Could not find ISEO lock %s to update user state", address)
+        if admin_client is None:
+            _LOGGER.error("Cannot modify user: no admin identity configured")
             return
+
+        ble_device = (
+            async_ble_device_from_address(self.hass, address, connectable=True)
+            or self._entry.runtime_data.last_ble_device
+        )
+        if not ble_device:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+            )
 
         try:
             async with ble_lock:
-                client.update_ble_device(ble_device)
-                await client.set_user_disabled(
+                admin_client.update_ble_device(ble_device)
+                await admin_client.set_user_disabled(
                     uuid_hex=self._uuid_hex,
                     user_type=self._user_type,
                     disabled=disabled,
                 )
-            # Refresh the coordinator to get updated state
             await self.coordinator.async_request_refresh()
         except Exception as err:
             _LOGGER.error("Failed to set user disabled state: %s", err)

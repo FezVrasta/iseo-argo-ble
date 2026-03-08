@@ -33,11 +33,12 @@
         "description": "To register Home Assistant as a Gateway:\n\n**Warning:** Close the ARGO app before clicking Submit.\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully.",
         "title": "Register gateway",
         "data": {
-          "enable_door_status": "Enable Door Status Advice (recommended)",
-          "passive_scanning": "Enable passive door-status scanning"
+          "passive_scanning": "Enable passive door-status scanning",
+          "enable_admin": "Enable user management"
         },
         "data_description": {
-          "passive_scanning": "Receive real-time door open/close updates from BLE advertisements without connecting. Requires Door Status Advice to be enabled on the lock (enabled automatically when this option is checked)."
+          "passive_scanning": "Receive real-time door open/close updates from BLE advertisements without connecting. Requires Door Status Advice to be enabled on the lock (enabled automatically when this option is checked).",
+          "enable_admin": "Allows Home Assistant to enable or disable lock users from the UI. A second identity is registered on the lock during setup — no extra steps needed."
         }
       },
       "gw_fetch_users": {

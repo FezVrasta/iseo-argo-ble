@@ -10,6 +10,7 @@ from datetime import timedelta
 from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, derive_private_key
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
@@ -17,7 +18,10 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .client import IseoClient, UserEntry
 from .const import (
+    ADMIN_USER_SUBTYPE,
     CONF_ADDRESS,
+    CONF_ADMIN_PRIV_SCALAR,
+    CONF_ADMIN_UUID,
     CONF_PRIV_SCALAR,
     CONF_UUID,
     DEFAULT_USER_SUBTYPE,
@@ -35,8 +39,10 @@ class IseoData:
     """Runtime data for ISEO Argo BLE Lock."""
 
     client: IseoClient
-    user_coordinator: DataUpdateCoordinator[list[UserEntry]]
+    admin_client: IseoClient | None
+    user_coordinator: DataUpdateCoordinator[list[UserEntry]] | None
     ble_lock: asyncio.Lock
+    last_ble_device: object  # BLEDevice | None — updated on each advertisement
 
 
 type IseoConfigEntry = ConfigEntry[IseoData]
@@ -45,7 +51,7 @@ type IseoConfigEntry = ConfigEntry[IseoData]
 async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool:
     """Set up ISEO Argo BLE Lock from a config entry."""
     address = entry.data[CONF_ADDRESS]
-    ble_device = async_ble_device_from_address(hass, address, connectable=True)
+    ble_device = (async_ble_device_from_address(hass, address, connectable=True) or async_ble_device_from_address(hass, address, connectable=False))
     if ble_device is None:
         raise ConfigEntryNotReady(f"Could not find ISEO lock {address} — is it powered on and in range?")
 
@@ -61,37 +67,57 @@ async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool
         ble_device=ble_device,
     )
 
-    async def _async_update_users() -> list[UserEntry]:
-        """Fetch users from the lock."""
-        _LOGGER.debug("Fetching users from lock %s", address)
-        try:
-            # We need a fresh BLE device reference for each connection
-            if dev := async_ble_device_from_address(hass, address, connectable=True):
-                client.update_ble_device(dev)
-            async with ble_lock:
-                return await client.read_users()
-        except Exception as err:
-            raise UpdateFailed(f"Error communicating with lock: {err}") from err
-
     ble_lock = asyncio.Lock()
-    user_coordinator = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name=f"{DOMAIN}_{address}_users",
-        update_method=_async_update_users,
-        update_interval=timedelta(minutes=10),
-    )
 
-    # Initial fetch
-    await user_coordinator.async_config_entry_first_refresh()
+    # Build admin client if credentials were registered during setup
+    admin_client: IseoClient | None = None
+    if CONF_ADMIN_UUID in entry.data and CONF_ADMIN_PRIV_SCALAR in entry.data:
+        admin_priv_int = int(entry.data[CONF_ADMIN_PRIV_SCALAR], 16)
+        admin_priv = await hass.async_add_executor_job(derive_private_key, admin_priv_int, SECP224R1())
+        admin_uuid_bytes = bytes.fromhex(entry.data[CONF_ADMIN_UUID])
+        admin_client = IseoClient(
+            address=address,
+            uuid_bytes=admin_uuid_bytes,
+            identity_priv=admin_priv,
+            subtype=ADMIN_USER_SUBTYPE,
+            ble_device=ble_device,
+        )
+
+    user_coordinator: DataUpdateCoordinator[list[UserEntry]] | None = None
+    if admin_client is not None:
+        async def _async_update_users() -> list[UserEntry]:
+            """Fetch users from the lock."""
+            _LOGGER.debug("Fetching users from lock %s", address)
+            try:
+                runtime_last = getattr(getattr(entry, "runtime_data", None), "last_ble_device", None)
+                if dev := (async_ble_device_from_address(hass, address, connectable=True) or runtime_last):
+                    admin_client.update_ble_device(dev)
+                async with ble_lock:
+                    users = await admin_client.read_users()
+                await asyncio.sleep(2)
+                return users
+            except Exception as err:
+                raise UpdateFailed(f"Error communicating with lock: {err}") from err
+
+        user_coordinator = DataUpdateCoordinator(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_{address}_users",
+            update_method=_async_update_users,
+            update_interval=timedelta(minutes=10),
+        )
+        await user_coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = IseoData(
         client=client,
+        admin_client=admin_client,
         user_coordinator=user_coordinator,
         ble_lock=ble_lock,
+        last_ble_device=ble_device,
     )
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    platforms = PLATFORMS if admin_client is not None else [p for p in PLATFORMS if p != Platform.SWITCH]
+    await hass.config_entries.async_forward_entry_setups(entry, platforms)
     return True
 
 

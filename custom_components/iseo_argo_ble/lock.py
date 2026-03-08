@@ -119,6 +119,7 @@ class IseoLockEntity(LockEntity):
                 change: BluetoothChange,
             ) -> None:
                 """Handle a passive BLE advertisement from the lock."""
+                self._entry.runtime_data.last_ble_device = service_info.device
                 self._handle_advertisement(service_info)
                 self._clear_advertisement_history(address)
 
@@ -166,12 +167,11 @@ class IseoLockEntity(LockEntity):
         except Exception:  # noqa: BLE001
             return
 
-        # Clear the two history dicts on the manager.
-        getattr(manager, "_all_history", {}).pop(address, None)
-        getattr(manager, "_connectable_history", {}).pop(address, None)
-
-        # Clear per-scanner previous_service_info so the next advertisement
+        # Only clear per-scanner previous_service_info so the next advertisement
         # is treated as a new event by the change-detection logic.
+        # Do NOT clear _all_history / _connectable_history — those caches are
+        # used by establish_connection to locate the device; clearing them
+        # causes connection failures when the proxy has no active advertisement.
         for scanner in getattr(manager, "_sources", {}).values():
             getattr(scanner, "_previous_service_info", {}).pop(address, None)
 
@@ -243,13 +243,11 @@ class IseoLockEntity(LockEntity):
             _LOGGER.debug("Skipping poll cycle — BLE operation already in progress")
             return
 
-        if not (
-            ble_device := async_ble_device_from_address(
-                self.hass,
-                self._entry.data[CONF_ADDRESS],
-                connectable=True,
-            )
-        ):
+        ble_device = (
+            async_ble_device_from_address(self.hass, self._entry.data[CONF_ADDRESS], connectable=True)
+            or self._entry.runtime_data.last_ble_device
+        )
+        if not ble_device:
             if self._attr_available:
                 _LOGGER.info("Lock is unavailable: device not found")
                 self._attr_available = False
@@ -353,13 +351,11 @@ class IseoLockEntity(LockEntity):
 
         self._set_unlocking()
 
-        if not (
-            ble_device := async_ble_device_from_address(
-                self.hass,
-                self._entry.data[CONF_ADDRESS],
-                connectable=True,
-            )
-        ):
+        ble_device = (
+            async_ble_device_from_address(self.hass, self._entry.data[CONF_ADDRESS], connectable=True)
+            or self._entry.runtime_data.last_ble_device
+        )
+        if not ble_device:
             self._set_locked(available=False)
             raise HomeAssistantError(
                 translation_domain=DOMAIN,

@@ -13,6 +13,9 @@ CONF_UUID = "uuid"
 CONF_PRIV_SCALAR = "priv_scalar"
 CONF_PASSIVE_SCANNING = "passive_scanning"
 CONF_USER_MAPPING = "user_mapping"
+CONF_ADMIN_UUID = "admin_uuid"
+CONF_ADMIN_PRIV_SCALAR = "admin_priv_scalar"
 
-# Default user subtype (gateway)
+# User subtypes
 DEFAULT_USER_SUBTYPE: int = 17  # UserSubType.BT_GATEWAY
+ADMIN_USER_SUBTYPE: int = 16  # UserSubType.BT_SMARTPHONE

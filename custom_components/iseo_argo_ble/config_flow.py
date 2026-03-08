@@ -35,6 +35,8 @@ from .client import (
 )
 from .const import (
     CONF_ADDRESS,
+    CONF_ADMIN_PRIV_SCALAR,
+    CONF_ADMIN_UUID,
     CONF_PASSIVE_SCANNING,
     CONF_PRIV_SCALAR,
     CONF_USER_MAPPING,
@@ -88,6 +90,9 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
         self._uuid_hex: str = ""
         self._priv_scalar: str = ""
         self._gw_priv: ec.EllipticCurvePrivateKey | None = None
+        self._admin_uuid_hex: str = ""
+        self._admin_priv_scalar: str = ""
+        self._admin_priv: ec.EllipticCurvePrivateKey | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Pick a lock from HA's BLE cache."""
@@ -205,6 +210,20 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
         errors: dict[str, str] = {}
         if user_input is not None:
             enable_passive = user_input.get(CONF_PASSIVE_SCANNING, False)
+            enable_admin = user_input.get("enable_admin", False)
+
+            # Generate admin credentials ahead of the BLE call so we can store them
+            if enable_admin:
+                admin_priv = _generate_identity()
+                admin_priv_int = admin_priv.private_numbers().private_value  # type: ignore[attr-defined]
+                admin_uuid = uuid_module.uuid4().bytes
+                self._admin_uuid_hex = admin_uuid.hex()
+                self._admin_priv_scalar = hex(admin_priv_int)
+                self._admin_priv = admin_priv
+            else:
+                self._admin_uuid_hex = ""
+                self._admin_priv_scalar = ""
+                self._admin_priv = None
 
             if not (ble_device := async_ble_device_from_address(self.hass, self._address, connectable=True)):
                 errors["base"] = "cannot_connect"
@@ -220,6 +239,8 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
                     await client.setup_gateway(
                         name="Home Assistant",
                         enable_door_status=enable_passive,
+                        admin_uuid_bytes=bytes.fromhex(self._admin_uuid_hex) if self._admin_uuid_hex else None,
+                        admin_identity_priv=self._admin_priv,
                     )
                     return self._async_create_iseo_entry(enable_passive)
                 except IseoConnectionError:
@@ -236,6 +257,7 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_PASSIVE_SCANNING, default=False): BooleanSelector(),
+                    vol.Required("enable_admin", default=True): BooleanSelector(),
                 }
             ),
             errors=errors,
@@ -243,14 +265,18 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
 
     def _async_create_iseo_entry(self, passive_scanning: bool) -> ConfigFlowResult:
         """Create the final config entry."""
+        data: dict[str, Any] = {
+            CONF_ADDRESS: self._address,
+            CONF_UUID: self._uuid_hex,
+            CONF_PRIV_SCALAR: self._priv_scalar,
+            CONF_PASSIVE_SCANNING: passive_scanning,
+        }
+        if self._admin_uuid_hex and self._admin_priv_scalar:
+            data[CONF_ADMIN_UUID] = self._admin_uuid_hex
+            data[CONF_ADMIN_PRIV_SCALAR] = self._admin_priv_scalar
         return self.async_create_entry(
             title=self._device_name or f"ISEO Lock ({self._address})",
-            data={
-                CONF_ADDRESS: self._address,
-                CONF_UUID: self._uuid_hex,
-                CONF_PRIV_SCALAR: self._priv_scalar,
-                CONF_PASSIVE_SCANNING: passive_scanning,
-            },
+            data=data,
         )
 
     @staticmethod
