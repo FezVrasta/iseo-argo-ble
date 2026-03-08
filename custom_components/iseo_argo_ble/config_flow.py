@@ -3,18 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 import uuid as uuid_module
+from typing import Any
 
-from cryptography.hazmat.primitives.asymmetric import ec
-from iseo_argo_ble import (
-    IseoAuthError,
-    IseoClient,
-    IseoConnectionError,
-    is_iseo_advertisement,
-)
 import voluptuous as vol
-
+from cryptography.hazmat.primitives.asymmetric import ec
 from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_ble_device_from_address,
@@ -29,6 +22,13 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
+)
+
+from iseo_argo_ble import (
+    IseoAuthError,
+    IseoClient,
+    IseoConnectionError,
+    is_iseo_advertisement,
 )
 
 from .const import (
@@ -175,6 +175,33 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):
 
         self.context["title_placeholders"] = {"name": self._device_name}
         return await self.async_step_bluetooth_confirm()
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reconfiguration."""
+        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        if entry is None:
+            return self.async_abort(reason="not_configured")
+
+        if user_input is not None:
+            return self.async_update_reload_and_abort(
+                entry,
+                data={**entry.data, **user_input},
+                reason="reconfigure_successful",
+            )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PASSIVE_SCANNING,
+                        default=entry.data.get(CONF_PASSIVE_SCANNING, False),
+                    ): BooleanSelector(),
+                }
+            ),
+        )
 
     async def async_step_bluetooth_confirm(
         self, user_input: dict[str, Any] | None = None

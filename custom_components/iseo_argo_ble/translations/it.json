@@ -12,6 +12,13 @@
         "title": "Serratura ISEO Rilevata",
         "description": "È stata trovata una nuova serratura ISEO nelle vicinanze: **{name}**.\n\nClicca **Conferma** per avviare la configurazione."
       },
+      "reconfigure": {
+        "title": "Riconfigura serratura ISEO",
+        "description": "Modifica le impostazioni per questa serratura.",
+        "data": {
+          "passive_scanning": "Abilita scansione passiva dello stato della porta"
+        }
+      },
       "gw_register": {
         "title": "Registra Gateway",
         "description": "Per registrare Home Assistant come Gateway:\n\n⚠️ **Chiudi l'app ARGO prima di cliccare Conferma.**\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera.",
@@ -58,7 +65,9 @@
     },
     "abort": {
       "already_configured": "Questa serratura è già stata configurata.",
-      "not_iseo_device": "Questo dispositivo non sembra essere una serratura ISEO."
+      "not_iseo_device": "Questo dispositivo non sembra essere una serratura ISEO.",
+      "not_configured": "Dispositivo non configurato",
+      "reconfigure_successful": "Riconfigurazione avvenuta con successo"
     }
   },
   "options": {
