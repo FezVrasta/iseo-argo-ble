@@ -336,6 +336,7 @@ async def cmd_register_gateway(args: argparse.Namespace) -> None:
             master_password=args.password,
             name=args.name,
             connect_timeout=args.timeout,
+            enable_door_status=args.enable_door_status,
         )
     except MasterAuthError as exc:
         sys.exit(f"Master login failed: {exc}. Check your admin password.")
@@ -815,6 +816,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_reg_gw.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
     p_reg_gw.add_argument("--password", help="Lock master password (optional if Master Card is scanned first)")
     p_reg_gw.add_argument("--name", default="Home Assistant", help="Name for the gateway user")
+    p_reg_gw.add_argument("--enable-door-status", action="store_true", help="Enable Door Status Advice flag on the lock")
 
     p_reg_pin = sub.add_parser("register-pin", help="Register/Update a PIN user")
     p_reg_pin.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")

@@ -212,7 +212,10 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
                 ble_device=async_ble_device_from_address(self.hass, self._address, connectable=True),
             )
             try:
-                await client.setup_gateway(name="Home Assistant")
+                await client.setup_gateway(
+                    name="Home Assistant",
+                    enable_door_status=user_input.get("enable_door_status", True),
+                )
                 return await self.async_step_gw_fetch_users()
             except (IseoConnectionError, IseoAuthError) as exc:
                 _LOGGER.error("Gateway setup failed: %s", exc)
@@ -220,6 +223,11 @@ class IseoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[
 
         return self.async_show_form(
             step_id="gw_register",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional("enable_door_status", default=True): bool,
+                }
+            ),
             description_placeholders={"uuid": self._uuid_hex.upper()},
             errors=errors,
         )

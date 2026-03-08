@@ -107,6 +107,17 @@ def test_parse_iseo_advertisement_robustness():
     ]
     assert parse_iseo_advertisement(uuids) is None
 
+    # Test state aggregation (OR-ing multiple 0xE... UUIDs)
+    uuids = [
+        "0000f001-0000-1000-8000-00805f9b34fb",  # marker
+        "0000e040-0000-1000-8000-00805f9b34fb",  # battery OK (0x0040)
+        "0000e800-0000-1000-8000-00805f9b34fb",  # door closed (0x0800)
+    ]
+    state = parse_iseo_advertisement(uuids)
+    assert state is not None
+    assert state.door_closed is True
+    assert state.battery_level == 2
+
 def test_slip_encode_decode():
     data = b"\x01\x02\xc0\x03\xdb\x04"
     encoded = _slip_encode(data)

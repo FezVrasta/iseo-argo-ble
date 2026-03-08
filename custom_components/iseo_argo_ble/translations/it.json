@@ -14,7 +14,10 @@
       },
       "gw_register": {
         "title": "Registra Gateway",
-        "description": "Per registrare Home Assistant come Gateway:\n\n⚠️ **Chiudi l'app ARGO prima di cliccare Conferma.**\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera."
+        "description": "Per registrare Home Assistant come Gateway:\n\n⚠️ **Chiudi l'app ARGO prima di cliccare Conferma.**\n\n1. Clicca su **Conferma** qui sotto.\n2. **Entro 30 secondi**, passa la tua **Master Card** fisica sulla serratura.\n\nLa serratura lampeggerà in verde una volta letta correttamente la tessera.",
+        "data": {
+          "enable_door_status": "Abilita Door Status Advice (consigliato)"
+        }
       },
       "gw_fetch_users": {
         "title": "Scarica Lista Utenti",

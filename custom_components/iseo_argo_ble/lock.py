@@ -121,7 +121,12 @@ class IseoLockEntity(CoordinatorEntity[IseoAdvertisementCoordinator], LockEntity
         """Probe door-status support; start polling if the lock supports it."""
         await super().async_added_to_hass()
         if self._door_status_supported is None:
-            await self._poll_state()
+            try:
+                # Use a brief timeout for the initial probe to avoid hanging setup
+                async with asyncio.timeout(5):
+                    await self._poll_state()
+            except (asyncio.TimeoutError, HomeAssistantError):
+                _LOGGER.debug("Initial state probe timed out or failed; will retry later")
 
         if self._door_status_supported:
             self.async_on_remove(async_track_time_interval(self.hass, self._poll_state, _POLL_INTERVAL))

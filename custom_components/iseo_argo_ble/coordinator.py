@@ -158,10 +158,11 @@ class IseoAdvertisementCoordinator(DataUpdateCoordinator[LockState | None]):
 
     async def async_setup(self) -> None:
         """Set up the advertisement listener."""
+        # Some scanners/backends prefer uppercase addresses for exact matching.
         self._unsubscribe = async_register_callback(
             self.hass,
             self._async_handle_advertisement,
-            {"address": self.address},
+            {"address": self.address.upper()},
             BluetoothScanningMode.PASSIVE,
         )
 

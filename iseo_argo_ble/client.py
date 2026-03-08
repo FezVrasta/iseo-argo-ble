@@ -94,15 +94,24 @@ def parse_iseo_advertisement(service_uuids: list[str]) -> LockState | None:
         _LOGGER.debug("No ISEO marker (0xF0xx) found in UUIDs: %s", [hex(s) for s in shorts])
         return None
 
-    # Find the System State UUID (prefixed with 0xE000).
-    # We no longer use index + 3 because some scanners (like HA's) reorder the UUID list.
-    state_val = next((s for s in shorts if (s & 0xF000) == 0xE000), None)
+    # Find the System State UUIDs (prefixed with 0xE000).
+    # We aggregate all of them by OR-ing the bits, as the state might be split or repeated.
+    state_uuids = [s for s in shorts if (s & 0xF000) == 0xE000]
 
-    if state_val is None:
+    if not state_uuids:
         _LOGGER.debug("No ISEO state (0xE000) found in UUIDs: %s", [hex(s) for s in shorts])
         return None
 
-    _LOGGER.debug("Parsing ISEO advertisement: marker=%s, state=%s", hex(marker_val), hex(state_val))
+    state_val = 0
+    for s in state_uuids:
+        state_val |= s
+
+    _LOGGER.debug(
+        "Parsing ISEO advertisement: marker=%s, state=%s (from %d UUIDs)",
+        hex(marker_val),
+        hex(state_val),
+        len(state_uuids),
+    )
 
     door_closed = bool(state_val & _STATE_DOOR_CLOSED)
     battery_level = (state_val >> _STATE_BATTERY_SHIFT) & _STATE_BATTERY_MASK
@@ -216,6 +225,7 @@ _CRYPTO_SYS_ECDH = 17  # AES128_ECDH224R1_KD56C
 
 _OP_TLV_OPEN = 43
 _OP_TLV_INFO = 32
+_OP_TLV_STORE_CONFIG = 34  # OPCODE_TLV_STORE_CONFIG — update system configuration
 _OP_TLV_LOGIN = 41  # OPCODE_TLV_LOGIN — authenticate as a specific BT user (required before master cmds)
 _OP_READ_LOG = 23  # OPCODE_READ_LOG_INFO — paginated access-log read
 _OP_TLV_READ_USER_BLOCK = 36  # OPCODE_TLV_READ_USER_BLOCK — paginated user whitelist read
@@ -1375,26 +1385,46 @@ class IseoClient:
         if status != _SBT_STATUS_OK:
             raise IseoAuthError(f"User registration failed (status={status})")
 
-    async def _register_log_notif_internal(self, client: BleakClient) -> None:
-        """Internal logic to register for log notifications."""
-        # Register for log notifications (opcode 64)
-        # Payload is our SbtUserId (Tag 1)
-        payload = _tlv_user_id(self._uuid_bytes, self._subtype)
-        await self._send_sbt(client, _OP_TLV_LOG_NOTIF_REGISTER, payload)
+    async def _enable_door_status_advice_internal(self, client: BleakClient) -> None:
+        """Internal logic to enable Door Status Advice flag."""
+        _LOGGER.debug("Enabling Door Status Advice (opcode 34)")
+
+        # 1. Fetch current capabilities first
+        await self._send_sbt(client, _OP_TLV_INFO)
+        try:
+            sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
+        except asyncio.TimeoutError as exc:
+            raise IseoConnectionError("No response to TLV_INFO while enabling door status") from exc
+
+        tags = _parse_tlv(sbt.get("payload", b""))
+        cap_bytes = tags.get(4, b"\x00")
+        capabilities = int.from_bytes(cap_bytes, "big")
+
+        # 2. Set bit 7 (Door Status Advice)
+        new_capabilities = capabilities | _CAP_DOOR_STATUS
+
+        if new_capabilities == capabilities:
+            _LOGGER.debug("Door Status Advice already enabled")
+            return
+
+        # 3. Store back
+        payload = _tlv(4, new_capabilities.to_bytes(max(len(cap_bytes), 1), "big"))
+        await self._send_sbt(client, _OP_TLV_STORE_CONFIG, payload)
 
         try:
             sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
         except asyncio.TimeoutError as exc:
-            raise IseoConnectionError("No response to LOG_NOTIF_REGISTER (did you scan the Master Card?)") from exc
+            raise IseoConnectionError("No response to STORE_CONFIG (did you scan the Master Card?)") from exc
 
         if sbt.get("status") != _SBT_STATUS_OK:
-            raise IseoAuthError(f"Log notification registration failed (status={sbt.get('status')})")
+            raise IseoAuthError(f"STORE_CONFIG failed with status={sbt.get('status')}")
 
     async def setup_gateway(
         self,
         master_password: str | None = None,
         name: str = "Home Assistant",
         connect_timeout: float = 20.0,
+        enable_door_status: bool = False,
     ) -> None:
         """
         Connect to the lock and perform full Gateway setup in a single session.
@@ -1419,11 +1449,15 @@ class IseoClient:
             if master_password:
                 await self.master_login(client, master_password)
 
-            _LOGGER.debug("Step 1/2: Registering user")
+            _LOGGER.debug("Step 1/3: Registering user")
             await self._register_user_internal(client, name)
 
-            _LOGGER.debug("Step 2/2: Enabling log notifications")
+            _LOGGER.debug("Step 2/3: Enabling log notifications")
             await self._register_log_notif_internal(client)
+
+            if enable_door_status:
+                _LOGGER.debug("Step 3/3: Enabling Door Status Advice")
+                await self._enable_door_status_advice_internal(client)
 
         _LOGGER.info("Gateway setup completed successfully (UUID=%s)", self._uuid_bytes.hex())
 

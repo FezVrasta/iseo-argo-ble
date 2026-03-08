@@ -14,7 +14,10 @@
       },
       "gw_register": {
         "title": "Register Gateway",
-        "description": "To register Home Assistant as a Gateway:\n\n⚠️ **Close the ARGO app before clicking Submit.**\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
+        "description": "To register Home Assistant as a Gateway:\n\n⚠️ **Close the ARGO app before clicking Submit.**\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully.",
+        "data": {
+          "enable_door_status": "Enable Door Status Advice (recommended)"
+        }
       },
       "gw_fetch_users": {
         "title": "Fetch User List",
