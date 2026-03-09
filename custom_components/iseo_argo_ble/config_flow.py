@@ -22,7 +22,6 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
-    selector,
 )
 
 from . import IseoData
@@ -31,6 +30,7 @@ from .client import (
     IseoAuthError,
     IseoClient,
     IseoConnectionError,
+    UserEntry,
     is_iseo_advertisement,
 )
 from .const import (
@@ -286,12 +286,17 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
         return IseoOptionsFlowHandler()
 
 
+def _is_ha_internal_user(user: UserEntry, admin_uuid_hex: str) -> bool:
+    """Return True for HA-internal lock identities (gateway or admin)."""
+    if user.user_type == USER_TYPE_BT and user.inner_subtype == 17:
+        return True
+    if admin_uuid_hex and user.uuid_hex == admin_uuid_hex:
+        return True
+    return False
+
+
 class IseoOptionsFlowHandler(OptionsFlow):
     """Handle options flow for ISEO Argo BLE Lock."""
-
-    def __init__(self) -> None:
-        """Initialize options flow."""
-        self._user_key_map: dict[str, str] = {}
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Manage the options."""
@@ -322,40 +327,56 @@ class IseoOptionsFlowHandler(OptionsFlow):
     async def async_step_map_users(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Link Argo users to Home Assistant users."""
         if user_input is not None:
-            # Reconstruct the mapping using the saved key map
+            # Reconstruct the mapping using the key map saved in context
+            user_key_map: dict[str, str] = self.context.get("user_key_map", {})
             mapping = {}
             for label, value in user_input.items():
-                if value and label in self._user_key_map:
-                    user_key = self._user_key_map[label]
+                if value and value != "" and label in user_key_map:
+                    user_key = user_key_map[label]
                     mapping[user_key] = value
 
             return self.async_create_entry(title="", data={CONF_USER_MAPPING: mapping})
 
         # Get the users from the coordinator
         data: IseoData = self.config_entry.runtime_data
+        if data.user_coordinator is None or data.user_coordinator.data is None:
+            return self.async_abort(reason="no_admin_configured")
+
         users = data.user_coordinator.data
 
-        # Filter out gateway users
-        mappable_users = [u for u in users if not (u.user_type == USER_TYPE_BT and u.inner_subtype == 17)]
+        # Filter out HA-internal users (gateway and admin identities)
+        admin_uuid_hex = self.config_entry.data.get(CONF_ADMIN_UUID, "")
+        mappable_users = [u for u in users if not _is_ha_internal_user(u, admin_uuid_hex)]
 
         # Get existing mapping
-        mapping = self.config_entry.options.get(CONF_USER_MAPPING, {})
+        existing_mapping = self.config_entry.options.get(CONF_USER_MAPPING, {})
+
+        # Build list of HA users for the select dropdown
+        ha_users = await self.hass.auth.async_get_users()
+        ha_user_options = [
+            SelectOptionDict(value=u.id, label=u.name or u.id)
+            for u in ha_users
+            if not u.system_generated and u.is_active
+        ]
+        ha_user_options.insert(0, SelectOptionDict(value="", label="(none)"))
 
         schema = {}
-        self._user_key_map = {}
+        user_key_map = {}
         for user in mappable_users:
             user_name = user.name.strip() or f"User {user.uuid_hex[:8]}"
-            # Make the label unique and descriptive
             label = f"{user_name} ({user.uuid_hex[:4]})"
             user_key = f"{user.user_type}_{user.uuid_hex}"
-            self._user_key_map[label] = user_key
+            user_key_map[label] = user_key
 
             schema[
                 vol.Optional(
                     label,
-                    description={"suggested_value": mapping.get(user_key)},
+                    description={"suggested_value": existing_mapping.get(user_key, "")},
                 )
-            ] = selector({"user": {}})
+            ] = SelectSelector(SelectSelectorConfig(options=ha_user_options, mode=SelectSelectorMode.DROPDOWN))
+
+        # Persist the label→key map so it's available when the form is submitted
+        self.context["user_key_map"] = user_key_map
 
         return self.async_show_form(
             step_id="map_users",

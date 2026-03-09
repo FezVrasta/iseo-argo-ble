@@ -82,6 +82,9 @@
     }
   },
   "options": {
+    "abort": {
+      "no_admin_configured": "User management is not available. No admin identity is configured for this lock."
+    },
     "step": {
       "init": {
         "title": "Lock Management",

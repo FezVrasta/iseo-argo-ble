@@ -30,7 +30,9 @@ from .client import (
     LockState,
     parse_iseo_advertisement,
 )
-from .const import CONF_ADDRESS, CONF_PASSIVE_SCANNING, DOMAIN
+from .const import CONF_ADDRESS, CONF_PASSIVE_SCANNING, CONF_USER_MAPPING, DOMAIN
+
+EVENT_LOCK_OPENED = f"{DOMAIN}_lock_opened"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -378,10 +380,17 @@ class IseoLockEntity(LockEntity):
                 translation_key="cannot_connect",
             )
 
+        # Resolve the calling HA user before connecting so we can log it
+        ha_user_id: str | None = self._context.user_id if self._context else None
+        ha_user_name: str | None = None
+        if ha_user_id:
+            user = await self.hass.auth.async_get_user(ha_user_id)
+            ha_user_name = user.name if user else None
+
         try:
             async with self._ble_lock:
                 self.client.update_ble_device(ble_device)
-                await self.client.gw_open(remote_user_name="Home Assistant")
+                await self.client.gw_open(remote_user_name=ha_user_name or "Home Assistant")
         except IseoAuthError as exc:
             self._set_locked()
             raise HomeAssistantError(
@@ -397,3 +406,14 @@ class IseoLockEntity(LockEntity):
 
         self._set_unlocked()
         self._relock_task = self.hass.async_create_task(self._auto_relock())
+
+        self.hass.bus.async_fire(
+            EVENT_LOCK_OPENED,
+            {
+                "entity_id": self.entity_id,
+                "lock_name": self._entry.title,
+                "ha_user_id": ha_user_id,
+                "ha_user_name": ha_user_name,
+            },
+            context=self._context,
+        )
