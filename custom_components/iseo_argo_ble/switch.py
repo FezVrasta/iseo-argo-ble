@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -13,9 +12,9 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import IseoConfigEntry
+from . import IseoConfigEntry, get_ble_device
 from .client import USER_TYPE_BT, USER_TYPE_PIN, USER_TYPE_RFID, UserEntry
-from .const import CONF_ADDRESS, CONF_USER_MAPPING, DOMAIN
+from .const import CONF_USER_MAPPING, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,16 +113,12 @@ class IseoUserSwitch(CoordinatorEntity, SwitchEntity):
         """Set the disabled state on the lock."""
         admin_client = self._entry.runtime_data.admin_client
         ble_lock = self._entry.runtime_data.ble_lock
-        address = self._entry.data[CONF_ADDRESS]
 
         if admin_client is None:
             _LOGGER.error("Cannot modify user: no admin identity configured")
             return
 
-        ble_device = (
-            async_ble_device_from_address(self.hass, address, connectable=True)
-            or self._entry.runtime_data.last_ble_device
-        )
+        ble_device = get_ble_device(self.hass, self._entry)
         if not ble_device:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,

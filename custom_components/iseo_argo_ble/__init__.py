@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import Any
 from datetime import timedelta
 
 from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, derive_private_key
@@ -42,10 +43,20 @@ class IseoData:
     admin_client: IseoClient | None
     user_coordinator: DataUpdateCoordinator[list[UserEntry]] | None
     ble_lock: asyncio.Lock
-    last_ble_device: object  # BLEDevice | None — updated on each advertisement
+    last_ble_device: Any  # BLEDevice | None — updated on each advertisement
 
 
 type IseoConfigEntry = ConfigEntry[IseoData]
+
+
+def get_ble_device(hass: HomeAssistant, entry: IseoConfigEntry) -> Any:
+    """Return the best available BLEDevice for the lock address.
+
+    Tries a fresh connectable lookup first; falls back to the most recently
+    seen device cached from advertisement callbacks.
+    """
+    address = entry.data[CONF_ADDRESS]
+    return async_ble_device_from_address(hass, address, connectable=True) or entry.runtime_data.last_ble_device
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool:
@@ -89,8 +100,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool
             """Fetch users from the lock."""
             _LOGGER.debug("Fetching users from lock %s", address)
             try:
-                runtime_last = getattr(getattr(entry, "runtime_data", None), "last_ble_device", None)
-                if dev := (async_ble_device_from_address(hass, address, connectable=True) or runtime_last):
+                if dev := get_ble_device(hass, entry):
                     admin_client.update_ble_device(dev)
                 async with ble_lock:
                     users = await admin_client.read_users()
@@ -106,8 +116,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool
             update_method=_async_update_users,
             update_interval=timedelta(minutes=10),
         )
-        await user_coordinator.async_config_entry_first_refresh()
-
     entry.runtime_data = IseoData(
         client=client,
         admin_client=admin_client,
@@ -115,6 +123,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool
         ble_lock=ble_lock,
         last_ble_device=ble_device,
     )
+
+    if user_coordinator is not None:
+        await user_coordinator.async_config_entry_first_refresh()
 
     platforms = PLATFORMS if admin_client is not None else [p for p in PLATFORMS if p != Platform.SWITCH]
     await hass.config_entries.async_forward_entry_setups(entry, platforms)

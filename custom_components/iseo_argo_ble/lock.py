@@ -10,7 +10,6 @@ from typing import Any, cast
 from homeassistant.components.bluetooth import (
     BluetoothChange,
     BluetoothServiceInfoBleak,
-    async_ble_device_from_address,
     async_register_callback,
 )
 from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
@@ -22,7 +21,7 @@ from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceIn
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
-from . import IseoConfigEntry
+from . import IseoConfigEntry, get_ble_device
 from .client import (
     BATTERY_LEVEL_LABELS,
     IseoAuthError,
@@ -42,6 +41,9 @@ _RELOCK_DELAY = 5
 
 # How often to poll the lock for door state (when door status is supported).
 _POLL_INTERVAL = timedelta(seconds=30)
+
+# How long without a passive advertisement before the watchdog reconnects.
+_PASSIVE_WATCHDOG_THRESHOLD = 2 * _POLL_INTERVAL
 
 
 async def async_setup_entry(
@@ -96,6 +98,7 @@ class IseoLockEntity(LockEntity):
         self._attr_is_unlocking = False
         self._attr_available = True
         self._poll_suppress_until: datetime | None = None
+        self._last_advertisement: datetime | None = None
         self._attr_extra_state_attributes: dict[str, Any] = {}
 
     async def async_added_to_hass(self) -> None:
@@ -106,36 +109,39 @@ class IseoLockEntity(LockEntity):
             await self._poll_state()
 
         if passive_scanning:
-            # Register a passive BLE advertisement callback so we get door-state
-            # updates without ever connecting.  We use the private-API workaround
-            # from habluetooth issue #358 to keep callbacks alive: after every
-            # advertisement the address history is cleared so HA treats the next
-            # advertisement as "new" and fires our callback again.
-            address = self._entry.data[CONF_ADDRESS]
-
-            @callback
-            def _on_advertisement(
-                service_info: BluetoothServiceInfoBleak,
-                change: BluetoothChange,
-            ) -> None:
-                """Handle a passive BLE advertisement from the lock."""
-                self._entry.runtime_data.last_ble_device = service_info.device
-                self._handle_advertisement(service_info)
-                self._clear_advertisement_history(address)
-
-            self._passive_unsub = async_register_callback(
-                self.hass,
-                _on_advertisement,
-                BluetoothCallbackMatcher(address=address),
-                BluetoothChange.ADVERTISEMENT,
-            )
+            self._register_passive_callback()
             self.async_on_remove(self._stop_passive_scanning)
-        elif self._door_status_supported is not False:
-            # Fall back to active polling when passive scanning is disabled.
+
+        if self._door_status_supported is not False:
+            # Always run a periodic poll — in passive mode this acts as a watchdog
+            # so the lock is marked unavailable if advertisements stop arriving.
             self._poll_unsub = async_track_time_interval(self.hass, self._poll_state, _POLL_INTERVAL)
             self.async_on_remove(self._poll_unsub)
 
         self.async_on_remove(self._cancel_relock_task)
+
+    def _register_passive_callback(self) -> None:
+        """Register (or re-register) the passive BLE advertisement callback."""
+        self._stop_passive_scanning()
+        address = self._entry.data[CONF_ADDRESS]
+
+        @callback
+        def _on_advertisement(
+            service_info: BluetoothServiceInfoBleak,
+            _change: BluetoothChange,
+        ) -> None:
+            """Handle a passive BLE advertisement from the lock."""
+            self._entry.runtime_data.last_ble_device = service_info.device
+            self._last_advertisement = datetime.now(tz=UTC)
+            self._handle_advertisement(service_info)
+            self._clear_advertisement_history(address)
+
+        self._passive_unsub = async_register_callback(
+            self.hass,
+            _on_advertisement,
+            BluetoothCallbackMatcher(address=address),
+            BluetoothChange.ADVERTISEMENT,
+        )
 
     def _stop_passive_scanning(self) -> None:
         """Unregister the passive BLE callback."""
@@ -239,14 +245,24 @@ class IseoLockEntity(LockEntity):
         if self._door_status_supported is False and _now is not None and not force:
             return
 
+        # In passive scanning mode, skip connecting if we received an advertisement
+        # recently — passive ads already keep state up to date.  Only connect when
+        # ads have been silent for longer than two poll intervals (watchdog behaviour).
+        now = datetime.now(tz=UTC)
+        if self._last_advertisement is not None:
+            silence = now - self._last_advertisement
+            if _now is not None and not force and silence < _PASSIVE_WATCHDOG_THRESHOLD:
+                _LOGGER.debug("Skipping poll — passive advertisement received recently")
+                return
+            if silence >= _PASSIVE_WATCHDOG_THRESHOLD and self._passive_unsub is not None:
+                _LOGGER.warning("No passive advertisement for %s — re-registering callback", silence)
+                self._register_passive_callback()
+
         if self._ble_lock.locked():
             _LOGGER.debug("Skipping poll cycle — BLE operation already in progress")
             return
 
-        ble_device = (
-            async_ble_device_from_address(self.hass, self._entry.data[CONF_ADDRESS], connectable=True)
-            or self._entry.runtime_data.last_ble_device
-        )
+        ble_device = get_ble_device(self.hass, self._entry)
         if not ble_device:
             if self._attr_available:
                 _LOGGER.info("Lock is unavailable: device not found")
@@ -268,6 +284,9 @@ class IseoLockEntity(LockEntity):
         if not self._attr_available:
             _LOGGER.info("Lock is back online")
             self._attr_available = True
+
+        # Reset the watchdog timer so a successful poll counts as "heard from the lock".
+        self._last_advertisement = now
 
         self._apply_state(state)
 
@@ -293,7 +312,7 @@ class IseoLockEntity(LockEntity):
         if self._attr_is_unlocking:
             self.async_write_ha_state()
             return
-        if not force and self._poll_suppress_until and datetime.now(tz=UTC) < self._poll_suppress_until:
+        if not force and self._poll_suppress_until and now < self._poll_suppress_until:
             self.async_write_ha_state()
             return
 
@@ -351,10 +370,7 @@ class IseoLockEntity(LockEntity):
 
         self._set_unlocking()
 
-        ble_device = (
-            async_ble_device_from_address(self.hass, self._entry.data[CONF_ADDRESS], connectable=True)
-            or self._entry.runtime_data.last_ble_device
-        )
+        ble_device = get_ble_device(self.hass, self._entry)
         if not ble_device:
             self._set_locked(available=False)
             raise HomeAssistantError(
