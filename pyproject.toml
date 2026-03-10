@@ -36,6 +36,8 @@ packages = ["iseo_argo_ble"]
 [tool.ruff]
 target-version = "py313"
 line-length = 120
+
+[tool.ruff.lint]
 select = [
     "E",   # pycodestyle errors
     "W",   # pycodestyle warnings
@@ -50,7 +52,7 @@ ignore = [
     "C901", # complex-structure
 ]
 
-[tool.ruff.isort]
+[tool.ruff.lint.isort]
 known-first-party = ["iseo_argo_ble", "custom_components.iseo_argo_ble"]
 
 [tool.mypy]
