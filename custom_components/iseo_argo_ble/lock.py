@@ -266,7 +266,11 @@ class IseoLockEntity(LockEntity):
 
         ble_device = get_ble_device(self.hass, self._entry)
         if not ble_device:
-            if self._attr_available:
+            # In passive mode the lock may simply be idle and not advertising —
+            # don't mark unavailable just because there's no device in the BLE cache.
+            # Only a failed connection attempt is authoritative.
+            passive = self._entry.data.get(CONF_PASSIVE_SCANNING, False)
+            if not passive and self._attr_available:
                 _LOGGER.info("Lock is unavailable: device not found")
                 self._attr_available = False
                 self.async_write_ha_state()
