@@ -14,7 +14,6 @@ from .const import (
     CONF_ADDRESS,
     CONF_ADMIN_PRIV_SCALAR,
     CONF_ADMIN_UUID,
-    CONF_PASSIVE_SCANNING,
     CONF_PRIV_SCALAR,
     CONF_UUID,
 )
@@ -28,7 +27,6 @@ async def async_get_config_entry_diagnostics(
     """Return diagnostics for a config entry."""
     runtime = entry.runtime_data
     address = entry.data[CONF_ADDRESS]
-    passive_scanning = entry.data.get(CONF_PASSIVE_SCANNING, False)
 
     # BLE device info from last seen advertisement
     last_device = runtime.last_ble_device
@@ -67,7 +65,6 @@ async def async_get_config_entry_diagnostics(
         "config": async_redact_data(dict(entry.data), TO_REDACT),
         "options": dict(entry.options),
         "address": address,
-        "passive_scanning": passive_scanning,
         "admin_configured": runtime.admin_client is not None,
         "ble_lock_locked": runtime.ble_lock.locked(),
         "last_ble_device": ble_device_info,

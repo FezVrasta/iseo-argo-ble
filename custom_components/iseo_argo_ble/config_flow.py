@@ -37,7 +37,6 @@ from .const import (
     CONF_ADDRESS,
     CONF_ADMIN_PRIV_SCALAR,
     CONF_ADMIN_UUID,
-    CONF_PASSIVE_SCANNING,
     CONF_PRIV_SCALAR,
     CONF_USER_MAPPING,
     CONF_UUID,
@@ -170,31 +169,6 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
         self.context["title_placeholders"] = {"name": self._device_name}
         return await self.async_step_bluetooth_confirm()
 
-    async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Handle reconfiguration."""
-        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
-        if entry is None:
-            return self.async_abort(reason="not_configured")
-
-        if user_input is not None:
-            return self.async_update_reload_and_abort(
-                entry,
-                data={**entry.data, **user_input},
-                reason="reconfigure_successful",
-            )
-
-        return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_PASSIVE_SCANNING,
-                        default=entry.data.get(CONF_PASSIVE_SCANNING, False),
-                    ): BooleanSelector(),
-                }
-            ),
-        )
-
     async def async_step_bluetooth_confirm(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Confirm the discovered lock before proceeding to enrollment."""
         if user_input is not None:
@@ -206,10 +180,9 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
         )
 
     async def async_step_gw_register(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Register the gateway and optionally enable passive door-status scanning."""
+        """Register the gateway and enable passive door-status scanning."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            enable_passive = user_input.get(CONF_PASSIVE_SCANNING, False)
             enable_admin = user_input.get("enable_admin", False)
 
             # Generate admin credentials ahead of the BLE call so we can store them
@@ -238,11 +211,11 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
                 try:
                     await client.setup_gateway(
                         name="Home Assistant",
-                        enable_door_status=enable_passive,
+                        enable_door_status=True,
                         admin_uuid_bytes=bytes.fromhex(self._admin_uuid_hex) if self._admin_uuid_hex else None,
                         admin_identity_priv=self._admin_priv,
                     )
-                    return self._async_create_iseo_entry(enable_passive)
+                    return self._async_create_iseo_entry()
                 except IseoConnectionError:
                     errors["base"] = "cannot_connect"
                 except IseoAuthError as exc:
@@ -256,20 +229,18 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
             step_id="gw_register",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_PASSIVE_SCANNING, default=False): BooleanSelector(),
                     vol.Required("enable_admin", default=True): BooleanSelector(),
                 }
             ),
             errors=errors,
         )
 
-    def _async_create_iseo_entry(self, passive_scanning: bool) -> ConfigFlowResult:
+    def _async_create_iseo_entry(self) -> ConfigFlowResult:
         """Create the final config entry."""
         data: dict[str, Any] = {
             CONF_ADDRESS: self._address,
             CONF_UUID: self._uuid_hex,
             CONF_PRIV_SCALAR: self._priv_scalar,
-            CONF_PASSIVE_SCANNING: passive_scanning,
         }
         if self._admin_uuid_hex and self._admin_priv_scalar:
             data[CONF_ADMIN_UUID] = self._admin_uuid_hex
