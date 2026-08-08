@@ -6,7 +6,6 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any
-from datetime import timedelta
 
 from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, derive_private_key
 from homeassistant.components.bluetooth import async_ble_device_from_address
@@ -109,12 +108,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool
             except Exception as err:
                 raise UpdateFailed(f"Error communicating with lock: {err}") from err
 
+        # No update_interval on purpose: periodic polling of the lock — even at
+        # a 10-minute interval — crashes recent ISEO firmware (see README). The
+        # user list is fetched once at setup and only refreshed on demand
+        # (a user-enable/disable toggle, or the options "refresh users" step).
         user_coordinator = DataUpdateCoordinator(
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{address}_users",
             update_method=_async_update_users,
-            update_interval=timedelta(minutes=10),
         )
     entry.runtime_data = IseoData(
         client=client,
