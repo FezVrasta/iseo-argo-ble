@@ -346,6 +346,51 @@ When Home Assistant identifies as a Gateway (subtype 17), it gains access to:
 
 ---
 
+## Access Log
+
+The lock keeps an access/event log (roughly the last 1000 entries). Two ways to read it:
+
+- **Opcode 23 (`READ_LOG_INFO`)** — paginated read of all entries (`read_logs(start, max_entries)`).
+- **Opcode 66 (`GET_UNREAD`)** — gateway-only; returns only entries new since this gateway UUID last read (`gw_read_unread_logs`) and marks them read. Requires the opcode-64 registration once in Master Mode.
+
+### Log entry wire format (71 bytes)
+
+Decoded by `LogEntry._from_bytes`; matches the app's `SbtLogEntryCodec`:
+
+| Offset | Field | Type | Notes |
+|-------:|-------|------|-------|
+| 0 | `event_code` | UINT8 | event type — see below / [LOG_EVENT_CODES.md](LOG_EVENT_CODES.md) |
+| 1 | `extra_description` | 32 B | ASCII, space-padded, trimmed |
+| 33 | `user_info` | 32 B | ASCII, space-padded, trimmed — who / which credential |
+| 65 | `list_code` | UINT8 | log list index (0 / 1) |
+| 66 | `battery` | UINT8 | battery level at event time |
+| 67 | `timestamp` | UINT32 | Unix epoch seconds (UTC), default byte order |
+
+### Event codes
+
+`event_code` (0–106) maps to the descriptions in **[LOG_EVENT_CODES.md](LOG_EVENT_CODES.md)**
+(extracted from the app's `EN.json` `Log_<n>` strings). The frequently useful ones:
+
+| code | meaning |
+|-----:|---------|
+| 8 | Door Open — generic **authorized** open (app / RFID / PIN / fingerprint); identity is in `user_info` |
+| 7 | Delayed Open |
+| 32 / 34 / 102 / 103 | Open with mechanical key |
+| 33 | Open with internal handle |
+| 45 | Open by remote opening button |
+| 85 | Peripheral open request |
+| 19 | Door Close |
+| 5 | Wrong PIN · 77 Fingerprint mismatch · 86 Permission denied · 88 Opening denied |
+| 51 / 52 / 53 | Not yet valid / Expired / Out of time schedule |
+
+> **Determining who opened the door:** there are **no per-credential open codes**. Any
+> authorized open — whatever the method (app, RFID, PIN, fingerprint) — is logged as
+> code **8 "Door Open"**, with the identity carried in `user_info`. Only mechanical,
+> internal-handle and remote opens get distinct codes (32/33/34/45/85/102/103). When
+> attributing a physical open, read the newest unread entry and resolve `user_info`.
+
+---
+
 ## Error Codes
 
 ### CSL Error Codes (Frame Type 5)

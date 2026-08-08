@@ -180,6 +180,39 @@ pipenv run python iseo_cli.py --debug open <address>
 pipenv run python iseo_cli.py new-identity
 ```
 
+## 🔎 Reverse-engineering sources
+
+The protocol, access-log, and firmware facts documented here were derived by
+interoperability analysis of the official **ISEO Argo Android app**
+(`com.iseo.android.argo`), for locks the author owns. Key references:
+
+- **[PROTOCOL.md](PROTOCOL.md)** — BLE/SBT protocol, TLV/opcodes, and the **Access Log**
+  wire format + event codes.
+- **[LOG_EVENT_CODES.md](LOG_EVENT_CODES.md)** — full `event_code` → description table
+  (codes 0–106).
+- **[FIRMWARE.md](FIRMWARE.md)** — how firmware is delivered (bundled in the app, no
+  server) and the image formats.
+
+The app is Flutter + Firebase; the BLE/DFU logic is native Java (decompilable with
+`jadx`), while UI strings live in `assets/flutter_assets/packages/argo_plugin/assets/lang/*.json`.
+
+Reproducing the tables from an app APK/XAPK:
+
+```
+# Log event-code table (event_code -> text)
+unzip -p com.iseo.android.argo.apk \
+  assets/flutter_assets/packages/argo_plugin/assets/lang/EN.json \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); \
+    [print(int(e["code"][4:]), "=", e["EN"]) for e in d \
+     if isinstance(e,dict) and e.get("code","").startswith("Log_") and e["code"][4:].isdigit()]'
+
+# Bundled firmware images
+unzip com.iseo.android.argo.apk 'assets/argo/fw/*' -d out   # -> out/assets/argo/fw/
+```
+
+Log entry structure and field order come from the app's `SbtLogEntryCodec`
+(`com/iseo/io/simplybt/core/model/log/`), which matches `LogEntry._from_bytes`.
+
 ## 📚 Additional Resources
 
 - [Home Assistant Developer Documentation](https://developers.home-assistant.io/)
