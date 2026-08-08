@@ -7,6 +7,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from habluetooth import get_manager
 from homeassistant.components.bluetooth import (
     BluetoothChange,
     BluetoothServiceInfoBleak,
@@ -153,35 +154,25 @@ class IseoLockEntity(LockEntity):
 
     @staticmethod
     def _clear_advertisement_history(address: str) -> None:
-        """Clear the habluetooth advertisement history for an address.
+        """Clear the cached advertisement history for an address.
 
-        This is the workaround described in habluetooth issue #358.
-        Because the ISEO lock encodes door state as mutually-exclusive service
-        UUIDs, HA's dedup logic would suppress repeated callbacks after the
-        first advertisement.  Clearing the history tricks HA into treating every
-        advertisement as new data, keeping callbacks alive indefinitely.
+        The ISEO lock encodes door state as mutually-exclusive service UUIDs,
+        so HA's change-detection guard would suppress repeated passive
+        callbacks after the first advertisement.  Clearing the history makes the
+        next advertisement be treated as new data, keeping the passive callback
+        alive indefinitely.
 
-        This intentionally touches private internals (_all_history,
-        _connectable_history, _previous_service_info) and must be updated if
-        habluetooth ever exposes a public API for this pattern.
+        Uses the public ``async_clear_advertisement_history`` API added in
+        habluetooth 5.11.0 (Home Assistant 2026.4), which resolves the private
+        ``_previous_service_info`` workaround previously required here — see
+        https://github.com/Bluetooth-Devices/habluetooth/issues/358.
+
+        Note: the public API also clears the connectable/all-device history
+        caches.  Connections stay covered because ``get_ble_device`` falls back
+        to ``runtime_data.last_ble_device``, which is refreshed from the current
+        advertisement immediately before this call.
         """
-        try:
-            from habluetooth import get_manager
-        except ImportError:
-            return
-
-        try:
-            manager = get_manager()
-        except Exception:  # noqa: BLE001
-            return
-
-        # Only clear per-scanner previous_service_info so the next advertisement
-        # is treated as a new event by the change-detection logic.
-        # Do NOT clear _all_history / _connectable_history — those caches are
-        # used by establish_connection to locate the device; clearing them
-        # causes connection failures when the proxy has no active advertisement.
-        for scanner in getattr(manager, "_sources", {}).values():
-            getattr(scanner, "_previous_service_info", {}).pop(address, None)
+        get_manager().async_clear_advertisement_history(address)
 
     def _apply_state(self, state: LockState) -> None:
         """Update extra state attributes from a LockState (advertisement or poll)."""
