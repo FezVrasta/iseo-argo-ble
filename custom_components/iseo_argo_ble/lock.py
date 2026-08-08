@@ -29,11 +29,18 @@ from .client import (
     IseoConnectionError,
     LockState,
     LogEntry,
+    describe_event,
     parse_iseo_advertisement,
 )
 from .const import CONF_ADDRESS, DOMAIN
 
 EVENT_LOCK_OPENED = f"{DOMAIN}_lock_opened"
+
+# Access-log event codes that represent an actual door open (see
+# LOG_EVENT_CODES.md). Authorized opens (app/RFID/PIN/fingerprint) are all
+# code 8; the rest are mechanical key, internal handle, and remote/low-battery
+# opens. Used to pick the relevant entry out of the drained unread log.
+_OPEN_EVENT_CODES = frozenset({7, 8, 32, 33, 34, 45, 75, 102, 103})
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -305,12 +312,19 @@ class IseoLockEntity(LockEntity):
     def _fire_open_event(self, logs: list[LogEntry]) -> None:
         """Fire a lock-opened event describing who opened the door.
 
-        ``gw_read_unread_logs`` drains all unread entries; the most recent one
-        corresponds to the open that just triggered this read.
+        ``gw_read_unread_logs`` drains *all* unread entries (opens, closes,
+        errors, ...), so pick the most recent one that is actually a door open.
+        The opener's identity lives in ``user_info`` (there are no per-credential
+        event codes — an authorized open is always code 8).
         """
-        latest = max(logs, key=lambda entry: entry.timestamp)
+        opens = [entry for entry in logs if entry.event_code in _OPEN_EVENT_CODES]
+        if not opens:
+            _LOGGER.debug("No open event among %d unread log entries", len(logs))
+            return
+        latest = max(opens, key=lambda entry: entry.timestamp)
         opened_by = self._resolve_user_name(latest)
-        _LOGGER.debug("Door opened by %s (event_code=%s)", opened_by, latest.event_code)
+        event = describe_event(latest.event_code)
+        _LOGGER.debug("Door opened by %s (%s)", opened_by, event)
         self.hass.bus.async_fire(
             EVENT_LOCK_OPENED,
             {
@@ -320,6 +334,7 @@ class IseoLockEntity(LockEntity):
                 "opened_by": opened_by,
                 "user_info": latest.user_info or None,
                 "event_code": latest.event_code,
+                "event": event,
                 "timestamp": latest.timestamp.isoformat(),
             },
         )
