@@ -19,8 +19,11 @@ from .client import (
     is_iseo_advertisement,
     parse_iseo_advertisement,
 )
+from .log_events import LOG_EVENT_DESCRIPTIONS, describe_event
 
 __all__ = [
+    "LOG_EVENT_DESCRIPTIONS",
+    "describe_event",
     "IseoAuthError",
     "IseoClient",
     "IseoConnectionError",

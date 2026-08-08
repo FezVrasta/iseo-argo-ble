@@ -2,6 +2,9 @@
 
 `LogEntry.event_code` (UINT8) meanings, from ISEO Argo app v4.1.0 (`EN.json`, `Log_<n>`).
 
+Available programmatically: `from .client import LOG_EVENT_DESCRIPTIONS, describe_event`
+(`describe_event(code)` returns the text below, or `"Unknown event (<code>)"`).
+
 | code | meaning |
 |---:|---|
 | 0 | Software Upgrade |
