@@ -29,6 +29,16 @@ This integration is **push-based**. Door status, battery level, and lock modes a
 > [!WARNING]
 > **Do not re-introduce polling on recent ISEO firmware.** On the latest ISEO firmware, repeatedly polling the lock over BLE (connecting on a timer to read its state) triggers a firmware fault. After a few weeks of continuous polling the lock crashes and stops responding entirely — Bluetooth included — and the **only** way to recover it is a full power cycle by **removing and reinserting the batteries**. Earlier versions of this integration polled every 30 seconds, which caused exactly this failure; it has been replaced with the passive, connectionless approach described above specifically to avoid it.
 
+The crash was observed on the following firmware (ISEO X1R Smart). If your lock reports these versions or newer, keep polling disabled:
+
+| Component | Hardware version | Software version |
+| --- | --- | --- |
+| Main board | `VMNFS20-8` | `MH15K230` |
+| Bluetooth module | `VMN500-3` | `MH14K082` |
+| External plate | `VMN470-4` | `MH10M006` |
+
+_(Internal plate firmware not reported.) You can find these values in the Argo app under the lock's device information._
+
 ## 🚀 Quick Start
 
 ### Prerequisites
