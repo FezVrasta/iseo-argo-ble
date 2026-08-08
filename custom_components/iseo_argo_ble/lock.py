@@ -29,10 +29,11 @@ from .client import (
     IseoConnectionError,
     LockState,
     LogEntry,
+    UserEntry,
     describe_event,
     parse_iseo_advertisement,
 )
-from .const import CONF_ADDRESS, DOMAIN
+from .const import CONF_ADDRESS, CONF_USER_MAPPING, DOMAIN
 
 EVENT_LOCK_OPENED = f"{DOMAIN}_lock_opened"
 
@@ -305,51 +306,89 @@ class IseoLockEntity(LockEntity):
             _LOGGER.debug("Could not read access log after door open: %s", exc)
             return
 
-        if logs:
-            self._fire_open_event(logs)
-
-    @callback
-    def _fire_open_event(self, logs: list[LogEntry]) -> None:
-        """Fire a lock-opened event describing who opened the door.
-
-        ``gw_read_unread_logs`` drains *all* unread entries (opens, closes,
-        errors, ...), so pick the most recent one that is actually a door open.
-        The opener's identity lives in ``user_info`` (there are no per-credential
-        event codes — an authorized open is always code 8).
-        """
+        # gw_read_unread_logs drains *all* unread entries (opens, closes,
+        # errors, ...); keep only the most recent one that is an actual open.
         opens = [entry for entry in logs if entry.event_code in _OPEN_EVENT_CODES]
         if not opens:
             _LOGGER.debug("No open event among %d unread log entries", len(logs))
             return
-        latest = max(opens, key=lambda entry: entry.timestamp)
-        opened_by = self._resolve_user_name(latest)
-        event = describe_event(latest.event_code)
-        _LOGGER.debug("Door opened by %s (%s)", opened_by, event)
-        self.hass.bus.async_fire(
-            EVENT_LOCK_OPENED,
-            {
-                "entity_id": self.entity_id,
-                "lock_name": self._entry.title,
-                "source": "lock",
-                "opened_by": opened_by,
-                "user_info": latest.user_info or None,
-                "event_code": latest.event_code,
-                "event": event,
-                "timestamp": latest.timestamp.isoformat(),
-            },
-        )
+        await self._fire_open_event(max(opens, key=lambda entry: entry.timestamp))
 
-    def _resolve_user_name(self, log: LogEntry) -> str | None:
-        """Resolve a log entry's user_info to a friendly name if possible."""
-        user_info = (log.user_info or "").strip()
-        if not user_info:
-            return None
+    async def _fire_open_event(self, log: LogEntry) -> None:
+        """Fire a lock-opened event, attributing the open to a user.
+
+        Attribution has two levels: the lock's own user (from the user
+        directory) and — if the user is linked in the options — the Home
+        Assistant account, via the same `CONF_USER_MAPPING` the per-user
+        switches use. Automations can key off `ha_user_name`/`ha_user_id`
+        when available, or fall back to `opened_by`.
+        """
+        event = describe_event(log.event_code)
+        payload: dict[str, Any] = {
+            "entity_id": self.entity_id,
+            "lock_name": self._entry.title,
+            "source": "lock",
+            "event": event,
+            "event_code": log.event_code,
+            "user_info": log.user_info or None,
+            "extra_description": log.extra_description or None,
+            "timestamp": log.timestamp.isoformat(),
+        }
+
+        user = self._match_log_user(log)
+        if user is None:
+            # No directory match (or no admin client to read the directory);
+            # fall back to whatever readable identity the log carries.
+            opened_by: str | None = (
+                (log.user_info or "").strip()
+                or (log.extra_description or "").strip()
+                or None
+            )
+        else:
+            opened_by = user.name.strip() or f"User {user.uuid_hex[:8]}"
+            payload["uuid"] = user.uuid_hex
+            payload["user_type"] = user.user_type
+            payload["lock_user_name"] = opened_by
+            # Map the lock user to a linked Home Assistant account if configured.
+            mapping = self._entry.options.get(CONF_USER_MAPPING, {})
+            if ha_user_id := mapping.get(f"{user.user_type}_{user.uuid_hex}"):
+                ha_user = await self.hass.auth.async_get_user(ha_user_id)
+                ha_user_name = ha_user.name if ha_user else None
+                payload["ha_user_id"] = ha_user_id
+                payload["ha_user_name"] = ha_user_name
+                if ha_user_name:
+                    opened_by = ha_user_name
+
+        payload["opened_by"] = opened_by
+        _LOGGER.debug("Door opened by %s (%s)", opened_by, event)
+        self.hass.bus.async_fire(EVENT_LOCK_OPENED, payload)
+
+    def _match_log_user(self, log: LogEntry) -> UserEntry | None:
+        """Find the lock user referenced by a log entry.
+
+        The opener is stored across two 32-char fields (`user_info` and
+        `extra_description`); depending on the credential, one may hold the
+        user's UUID and the other a name, so match either field against either
+        the UUID or the stored name of the known users.
+        """
         coordinator = self._entry.runtime_data.user_coordinator
-        if coordinator and coordinator.data:
-            for user in coordinator.data:
-                if user_info in (user.uuid_hex, user.name):
-                    return user.name.strip() or user_info
-        return user_info
+        users = coordinator.data if coordinator else None
+        if not users:
+            return None
+        candidates = {
+            (log.user_info or "").strip(),
+            (log.extra_description or "").strip(),
+        }
+        candidates.discard("")
+        if not candidates:
+            return None
+        for user in users:
+            names = {user.uuid_hex}
+            if user.name and user.name.strip():
+                names.add(user.name.strip())
+            if candidates & names:
+                return user
+        return None
 
     def _cancel_relock_task(self) -> None:
         """Cancel any pending relock task."""

@@ -385,9 +385,19 @@ Decoded by `LogEntry._from_bytes`; matches the app's `SbtLogEntryCodec`:
 
 > **Determining who opened the door:** there are **no per-credential open codes**. Any
 > authorized open — whatever the method (app, RFID, PIN, fingerprint) — is logged as
-> code **8 "Door Open"**, with the identity carried in `user_info`. Only mechanical,
-> internal-handle and remote opens get distinct codes (32/33/34/45/85/102/103). When
-> attributing a physical open, read the newest unread entry and resolve `user_info`.
+> code **8 "Door Open"**; only mechanical, internal-handle and remote opens get distinct
+> codes (32/33/34/45/102/103). The opener's identity is split across the entry's two
+> 32-char fields (`user_info` and `extra_description`) — depending on credential, one
+> holds the user's UUID and the other a name — so match **either** field against **either**
+> the UUID or the stored name in the user directory. Once the lock user is found, map it
+> to a linked Home Assistant account via `CONF_USER_MAPPING` (`{user_type}_{uuid_hex}` →
+> HA user id), the same mapping the per-user switches use.
+>
+> The integration implements this in `lock.py` (`_match_log_user` / `_fire_open_event`):
+> it filters the drained unread log to the newest open entry and fires
+> `iseo_argo_ble_lock_opened` with `opened_by`, `event`, `event_code`, `user_info`,
+> `extra_description`, and — when the user is known/linked — `uuid`, `user_type`,
+> `lock_user_name`, `ha_user_id`, `ha_user_name`.
 
 ---
 
