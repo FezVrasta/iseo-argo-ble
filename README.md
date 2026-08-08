@@ -15,12 +15,19 @@ This integration makes Home Assistant behave as a native **ISEO ARGO Gateway**, 
 ## ✨ Features
 
 - **🚀 Native Performance**: Uses specialized Gateway commands for fast response times and improved reliability.
-- **🤫 Silent Operation**: Log polling is performed using specialized unread-log commands that do **not** trigger the lock's audible "beep."
+- **🤫 Silent Operation**: Access-log reads use specialized unread-log commands that do **not** trigger the lock's audible "beep."
 - **👤 User Attribution**: Attributes remote operations to the specific Home Assistant user. Audit logs will show "Opened by [HA User] via Home Assistant."
 - **🔓 Lock Control**: Remotely unlock your ISEO smart lock with real-time feedback.
 - **📊 Full Audit Logs**: Access every log entry found on the lock, with automatic mapping to Home Assistant users.
 - **🔐 Secure Authentication**: Uses EC cryptography (SECP224R1) for secure session establishment.
 - **📡 Local Control**: Direct Bluetooth communication without any cloud dependencies or bridge hardware.
+
+## 📡 State Updates (Passive, No Polling)
+
+This integration is **push-based**. Door status, battery level, and lock modes are read from the lock's passive BLE advertisements, so Home Assistant does not connect to the lock on a timer. The lock is only actively connected to on demand: when you open it, and once per physical door-open to read the access log and attribute the event to a user.
+
+> [!WARNING]
+> **Do not re-introduce polling on recent ISEO firmware.** On the latest ISEO firmware, repeatedly polling the lock over BLE (connecting on a timer to read its state) triggers a firmware fault. After a few weeks of continuous polling the lock crashes and stops responding entirely — Bluetooth included — and the **only** way to recover it is a full power cycle by **removing and reinserting the batteries**. Earlier versions of this integration polled every 30 seconds, which caused exactly this failure; it has been replaced with the passive, connectionless approach described above specifically to avoid it.
 
 ## 🚀 Quick Start
 
@@ -73,6 +80,9 @@ Once configured, you can use the **Configure** button on the integration page to
 
 **"Auth failed" during Master Card scan**
 - Ensure you click **Submit** in Home Assistant **before** scanning the card. The lock must be expecting the command when the card is scanned.
+
+**Lock has become completely unresponsive (no Bluetooth, no app, no HA)**
+- On recent ISEO firmware this is the polling-induced firmware crash described above, typically after a few weeks of continuous polling by older versions of this integration. Recover it with a full power cycle: **remove the batteries, wait a few seconds, then reinsert them.** Update to the latest version of this integration (which no longer polls) to prevent it recurring.
 
 ## 📄 License
 
