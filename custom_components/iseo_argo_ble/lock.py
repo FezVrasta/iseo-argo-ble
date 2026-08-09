@@ -18,6 +18,7 @@ from homeassistant.components.lock import LockEntity
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
@@ -33,7 +34,7 @@ from .client import (
     describe_event,
     parse_iseo_advertisement,
 )
-from .const import CONF_ADDRESS, CONF_USER_MAPPING, DOMAIN
+from .const import CONF_ADDRESS, CONF_USER_MAPPING, DOMAIN, signal_update
 
 EVENT_LOCK_OPENED = f"{DOMAIN}_lock_opened"
 
@@ -229,6 +230,8 @@ class IseoLockEntity(LockEntity):
         # Any advertisement means the lock is reachable.
         self._attr_available = True
         self._apply_state(state)
+        # Share the raw state (battery / modes / door) with the other entities.
+        self._publish_update(state)
 
         if self._attr_is_unlocking:
             self.async_write_ha_state()
@@ -255,6 +258,15 @@ class IseoLockEntity(LockEntity):
             self._schedule_open_investigation()
 
     @callback
+    def _publish_update(self, state: LockState | None = None) -> None:
+        """Publish the latest passive state/availability to the other entities."""
+        runtime = self._entry.runtime_data
+        if state is not None:
+            runtime.latest_state = state
+        runtime.available = self._attr_available
+        async_dispatcher_send(self.hass, signal_update(self._entry.entry_id))
+
+    @callback
     def _check_availability(self, _now: datetime | None = None) -> None:
         """Mark the lock unavailable if passive advertisements stop arriving.
 
@@ -274,6 +286,7 @@ class IseoLockEntity(LockEntity):
             _LOGGER.info("Lock unavailable: no advertisement for %s", silence)
             self._attr_available = False
             self.async_write_ha_state()
+            self._publish_update()
 
     def _schedule_open_investigation(self) -> None:
         """Read who opened the door without blocking the advertisement callback."""
@@ -365,6 +378,8 @@ class IseoLockEntity(LockEntity):
         payload["opened_by"] = opened_by
         _LOGGER.debug("Door opened by %s (%s)", opened_by, event)
         self.hass.bus.async_fire(EVENT_LOCK_OPENED, payload)
+        self._entry.runtime_data.last_event = payload
+        self._publish_update()
 
     def _match_log_user(self, log: LogEntry) -> UserEntry | None:
         """Find the lock user referenced by a log entry.
@@ -484,15 +499,16 @@ class IseoLockEntity(LockEntity):
         self._set_unlocked()
         self._relock_task = self.hass.async_create_task(self._auto_relock())
 
-        self.hass.bus.async_fire(
-            EVENT_LOCK_OPENED,
-            {
-                "entity_id": self.entity_id,
-                "lock_name": self._entry.title,
-                "source": "ha",
-                "opened_by": ha_user_name,
-                "ha_user_id": ha_user_id,
-                "ha_user_name": ha_user_name,
-            },
-            context=self._context,
-        )
+        payload = {
+            "entity_id": self.entity_id,
+            "lock_name": self._entry.title,
+            "source": "ha",
+            "event": "Opened via Home Assistant",
+            "opened_by": ha_user_name,
+            "ha_user_id": ha_user_id,
+            "ha_user_name": ha_user_name,
+            "timestamp": datetime.now(tz=UTC).isoformat(),
+        }
+        self.hass.bus.async_fire(EVENT_LOCK_OPENED, payload, context=self._context)
+        self._entry.runtime_data.last_event = payload
+        self._publish_update()

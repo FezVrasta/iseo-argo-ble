@@ -127,10 +127,35 @@
   "entity": {
     "sensor": {
       "last_event": {
-        "name": "Last Event"
+        "name": "Last event"
       },
       "battery": {
         "name": "Battery"
+      },
+      "operational_mode": {
+        "name": "Operational mode",
+        "state": {
+          "standard": "Standard",
+          "office": "Office",
+          "timed": "Timed"
+        }
+      }
+    },
+    "binary_sensor": {
+      "door": {
+        "name": "Door"
+      },
+      "aux_battery_low": {
+        "name": "Backup battery"
+      },
+      "privacy_mode": {
+        "name": "Privacy mode"
+      },
+      "passage_mode": {
+        "name": "Passage mode"
+      },
+      "vip_mode": {
+        "name": "VIP mode"
       }
     }
   },

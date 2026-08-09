@@ -16,7 +16,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .client import IseoClient, UserEntry
+from .client import IseoClient, LockState, UserEntry
 from .const import (
     ADMIN_USER_SUBTYPE,
     CONF_ADDRESS,
@@ -43,6 +43,11 @@ class IseoData:
     user_coordinator: DataUpdateCoordinator[list[UserEntry]] | None
     ble_lock: asyncio.Lock
     last_ble_device: Any  # BLEDevice | None — updated on each advertisement
+    # Shared passive state, published by the lock entity and read by the
+    # sensor/binary_sensor entities (all fed from the same BLE advertisements).
+    latest_state: LockState | None = None
+    available: bool = True
+    last_event: dict[str, Any] | None = None
 
 
 type IseoConfigEntry = ConfigEntry[IseoData]

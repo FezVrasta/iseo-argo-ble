@@ -5,7 +5,17 @@ from __future__ import annotations
 from homeassistant.const import Platform
 
 DOMAIN = "iseo_argo_ble"
-PLATFORMS: list[Platform] = [Platform.LOCK, Platform.SWITCH]
+PLATFORMS: list[Platform] = [
+    Platform.LOCK,
+    Platform.SWITCH,
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
+]
+
+
+def signal_update(entry_id: str) -> str:
+    """Dispatcher signal fired when new passive state / an event is available."""
+    return f"{DOMAIN}_{entry_id}_update"
 
 # Config entry keys
 CONF_ADDRESS = "address"
