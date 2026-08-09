@@ -34,15 +34,41 @@ from .client import (
     describe_event,
     parse_iseo_advertisement,
 )
-from .const import CONF_ADDRESS, CONF_USER_MAPPING, DOMAIN, signal_update
-
-EVENT_LOCK_OPENED = f"{DOMAIN}_lock_opened"
+from .const import (
+    CONF_ADDRESS,
+    CONF_USER_MAPPING,
+    DOMAIN,
+    EVENT_ALERT,
+    EVENT_LOCK_OPENED,
+    signal_update,
+)
 
 # Access-log event codes that represent an actual door open (see
 # LOG_EVENT_CODES.md). Authorized opens (app/RFID/PIN/fingerprint) are all
 # code 8; the rest are mechanical key, internal handle, and remote/low-battery
 # opens. Used to pick the relevant entry out of the drained unread log.
 _OPEN_EVENT_CODES = frozenset({7, 8, 32, 33, 34, 45, 75, 102, 103})
+
+# Security / fault event codes worth surfacing as alerts (see LOG_EVENT_CODES.md).
+# NOTE: these are only seen when the unread log is drained on a door open, so
+# they surface with a delay (at the next open) — the integration never polls.
+_ALERT_EVENT_CODES = frozenset(
+    {
+        5,  # Wrong PIN
+        21,  # Memory Full
+        44,  # Open denied due to internal handle pressed
+        52,  # Expired
+        53,  # Out of Time Schedule
+        61,  # Lithium backup battery KO
+        68,  # Authentication mismatch
+        77,  # Fingerprint mismatch
+        86,  # Permission denied
+        88,  # Opening denied
+        89,  # Wrong password
+        90,  # Hardware fault
+        99,  # Master card error
+    }
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -320,12 +346,35 @@ class IseoLockEntity(LockEntity):
             return
 
         # gw_read_unread_logs drains *all* unread entries (opens, closes,
-        # errors, ...); keep only the most recent one that is an actual open.
+        # errors, ...). Surface the newest notable security/fault entry as an
+        # alert, then attribute the newest actual open.
+        alerts = [entry for entry in logs if entry.event_code in _ALERT_EVENT_CODES]
+        if alerts:
+            self._fire_alert_event(max(alerts, key=lambda entry: entry.timestamp))
+
         opens = [entry for entry in logs if entry.event_code in _OPEN_EVENT_CODES]
         if not opens:
             _LOGGER.debug("No open event among %d unread log entries", len(logs))
             return
         await self._fire_open_event(max(opens, key=lambda entry: entry.timestamp))
+
+    @callback
+    def _fire_alert_event(self, log: LogEntry) -> None:
+        """Fire an alert event for a notable security/fault log entry."""
+        event = describe_event(log.event_code)
+        payload: dict[str, Any] = {
+            "entity_id": self.entity_id,
+            "lock_name": self._entry.title,
+            "event": event,
+            "event_code": log.event_code,
+            "user_info": log.user_info or None,
+            "extra_description": log.extra_description or None,
+            "timestamp": log.timestamp.isoformat(),
+        }
+        _LOGGER.debug("Lock alert: %s (code %s)", event, log.event_code)
+        self.hass.bus.async_fire(EVENT_ALERT, payload)
+        self._entry.runtime_data.last_alert = payload
+        self._publish_update()
 
     async def _fire_open_event(self, log: LogEntry) -> None:
         """Fire a lock-opened event, attributing the open to a user.

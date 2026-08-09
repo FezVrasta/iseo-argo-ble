@@ -139,6 +139,9 @@
           "office": "Office",
           "timed": "Timed"
         }
+      },
+      "last_alert": {
+        "name": "Last alert"
       }
     },
     "binary_sensor": {
@@ -157,6 +160,12 @@
       "vip_mode": {
         "name": "VIP mode"
       }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "opened": "Door opened",
+      "alert": "Security alert"
     }
   },
   "exceptions": {

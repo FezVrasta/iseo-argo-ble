@@ -48,6 +48,7 @@ class IseoData:
     latest_state: LockState | None = None
     available: bool = True
     last_event: dict[str, Any] | None = None
+    last_alert: dict[str, Any] | None = None
 
 
 type IseoConfigEntry = ConfigEntry[IseoData]

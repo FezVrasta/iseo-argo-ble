@@ -31,6 +31,7 @@ async def async_setup_entry(
             IseoBatterySensor(entry),
             IseoOperationalModeSensor(entry),
             IseoLastEventSensor(entry),
+            IseoLastAlertSensor(entry),
         ]
     )
 
@@ -109,3 +110,36 @@ class IseoLastEventSensor(IseoPassiveEntity, SensorEntity):
         if not event:
             return None
         return {key: value for key, value in event.items() if key != "entity_id"}
+
+
+class IseoLastAlertSensor(IseoPassiveEntity, SensorEntity):
+    """The most recent security/fault event seen in the access log.
+
+    Surfaced when the unread log is read on a door open, so it can be delayed;
+    the integration never polls the lock.
+    """
+
+    _attr_translation_key = "last_alert"
+    _attr_icon = "mdi:alert"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry: IseoConfigEntry) -> None:
+        """Initialize."""
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.unique_id}_last_alert"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return a short summary of the last alert."""
+        alert = self._entry.runtime_data.last_alert
+        if not alert:
+            return None
+        return str(alert.get("event") or "Alert")[:255]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Expose the full last-alert payload."""
+        alert = self._entry.runtime_data.last_alert
+        if not alert:
+            return None
+        return {key: value for key, value in alert.items() if key != "entity_id"}

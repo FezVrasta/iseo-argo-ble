@@ -17,6 +17,11 @@ def signal_update(entry_id: str) -> str:
     """Dispatcher signal fired when new passive state / an event is available."""
     return f"{DOMAIN}_{entry_id}_update"
 
+
+# Bus events fired by the lock entity
+EVENT_LOCK_OPENED = f"{DOMAIN}_lock_opened"
+EVENT_ALERT = f"{DOMAIN}_alert"
+
 # Config entry keys
 CONF_ADDRESS = "address"
 CONF_UUID = "uuid"
