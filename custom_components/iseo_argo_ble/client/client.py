@@ -229,6 +229,8 @@ _OP_TLV_LOG_NOTIF_GET_UNREAD = 66  # OPCODE_TLV_LOG_NOTIFICATION_GET_UNREAD
 
 _LOG_ENTRY_SIZE = 71  # fixed per SbtLogEntryCodec
 _LOG_STATUS_EOF = {7, 80}  # status codes that mean "no more entries"
+# Safety cap when draining unread gateway logs (the lock stores ~1000 entries).
+_MAX_LOG_DRAIN_PAGES = 2000
 
 _SBT_STATUS_OK = 0
 _SBT_STATUS_ERROR = -1
@@ -1946,50 +1948,75 @@ class IseoClient:
                     "UUID may not be registered on the lock"
                 )
 
-            # OPCODE_TLV_LOG_NOTIFICATION_GET_UNREAD (66)
+            # OPCODE_TLV_LOG_NOTIFICATION_GET_UNREAD (66).
+            # Each request returns the oldest unread page and advances the
+            # lock's read pointer, so loop until it reports no more unread —
+            # this drains the whole backlog in a single session (important when
+            # weeks of entries have queued up) and lets the caller surface the
+            # newest entry rather than slowly replaying the backlog.
             # Payload is our SbtUserId (Tag 1) - this one stays Tag 1 as confirmed by SDK
             payload = _tlv_user_id(self._uuid_bytes, self._subtype)
-            await self._send_sbt(client, _OP_TLV_LOG_NOTIF_GET_UNREAD, payload)
+            seen: set[bytes] = set()
+            pages = 0
+            while pages < _MAX_LOG_DRAIN_PAGES:
+                pages += 1
+                await self._send_sbt(client, _OP_TLV_LOG_NOTIF_GET_UNREAD, payload)
 
-            try:
-                sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to GET_UNREAD_LOGS") from exc
-
-            status = sbt.get("status", 0)
-            if status in _LOG_STATUS_EOF:
-                return []
-            if status != _SBT_STATUS_OK:
-                raise IseoAuthError(f"Lock returned status={status} for GET_UNREAD_LOGS")
-
-            raw = sbt.get("payload", b"")
-            if len(raw) < 3:
-                return []
-
-            entry_count, more_flag = struct.unpack_from(">HB", raw)
-            body = raw[3:]
-
-            for i in range(entry_count):
-                chunk = body[i * _LOG_ENTRY_SIZE : (i + 1) * _LOG_ENTRY_SIZE]
-                if len(chunk) < _LOG_ENTRY_SIZE:
-                    _LOGGER.warning(
-                        "gw_read_unread_logs: partial data at entry %d/%d "
-                        "(got %d bytes, expected %d) — remaining entries dropped",
-                        i, entry_count, len(chunk), _LOG_ENTRY_SIZE,
-                    )
-                    break
                 try:
-                    entries.append(LogEntry._from_bytes(chunk))
-                except Exception as exc:
-                    _LOGGER.debug("Failed to decode log entry %d: %s", i, exc)
+                    sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
+                except asyncio.TimeoutError as exc:
+                    raise IseoConnectionError("No response to GET_UNREAD_LOGS") from exc
 
-            if more_flag:
+                status = sbt.get("status", 0)
+                if status in _LOG_STATUS_EOF:
+                    break
+                if status != _SBT_STATUS_OK:
+                    raise IseoAuthError(
+                        f"Lock returned status={status} for GET_UNREAD_LOGS"
+                    )
+
+                raw = sbt.get("payload", b"")
+                if len(raw) < 3:
+                    break
+
+                entry_count, more_flag = struct.unpack_from(">HB", raw)
+                body = raw[3:]
+
+                new_in_page = 0
+                for i in range(entry_count):
+                    chunk = body[i * _LOG_ENTRY_SIZE : (i + 1) * _LOG_ENTRY_SIZE]
+                    if len(chunk) < _LOG_ENTRY_SIZE:
+                        _LOGGER.warning(
+                            "gw_read_unread_logs: partial data at entry %d/%d "
+                            "(got %d bytes, expected %d) — remaining entries dropped",
+                            i, entry_count, len(chunk), _LOG_ENTRY_SIZE,
+                        )
+                        break
+                    if chunk in seen:
+                        continue  # guard against a page being re-served
+                    seen.add(chunk)
+                    try:
+                        entries.append(LogEntry._from_bytes(chunk))
+                        new_in_page += 1
+                    except Exception as exc:
+                        _LOGGER.debug("Failed to decode log entry %d: %s", i, exc)
+
+                # Stop when the lock signals no more, or a page adds nothing new
+                # (guards against a stuck more_flag / re-served page).
+                if not more_flag or new_in_page == 0:
+                    break
+            else:
                 _LOGGER.warning(
-                    "gw_read_unread_logs: lock reports additional unread entries beyond this page "
-                    "but opcode 66 does not support offset pagination — some entries may have been missed",
+                    "gw_read_unread_logs: stopped after %d pages (safety cap); "
+                    "more unread entries may remain",
+                    _MAX_LOG_DRAIN_PAGES,
                 )
 
-        _LOGGER.debug("gw_read_unread_logs: fetched %d entries", len(entries))
+        _LOGGER.debug(
+            "gw_read_unread_logs: fetched %d entries across %d page(s)",
+            len(entries),
+            pages,
+        )
         return entries
 
     async def gw_register_log_notif(

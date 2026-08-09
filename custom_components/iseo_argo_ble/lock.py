@@ -356,6 +356,10 @@ class IseoLockEntity(LockEntity):
         if not opens:
             _LOGGER.debug("No open event among %d unread log entries", len(logs))
             return
+        # Backfill per-user "last opened" from the whole drained batch, then
+        # fire an event only for the single newest open (avoid replaying the
+        # backlog as events).
+        self._backfill_user_opens(opens)
         await self._fire_open_event(max(opens, key=lambda entry: entry.timestamp))
 
     @callback
@@ -434,6 +438,24 @@ class IseoLockEntity(LockEntity):
             key = f"{user.user_type}_{user.uuid_hex}"
             self._entry.runtime_data.last_open_by_user[key] = payload
         self._publish_update()
+
+    def _backfill_user_opens(self, opens: list[LogEntry]) -> None:
+        """Record the newest open per user from the drained log (no events).
+
+        Populates each user's "last opened" from the historical entries in the
+        batch so the per-user switches reflect the log even for users whose
+        most recent open predates this run.
+        """
+        records = self._entry.runtime_data.last_open_by_user
+        for log in sorted(opens, key=lambda entry: entry.timestamp):
+            user = self._match_log_user(log)
+            if user is None:
+                continue
+            records[f"{user.user_type}_{user.uuid_hex}"] = {
+                "timestamp": log.timestamp.isoformat(),
+                "event": describe_event(log.event_code),
+                "opened_by": user.name.strip() or f"User {user.uuid_hex[:8]}",
+            }
 
     def _match_log_user(self, log: LogEntry) -> UserEntry | None:
         """Find the lock user referenced by a log entry.
