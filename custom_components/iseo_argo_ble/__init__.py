@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, derive_private_key
@@ -49,6 +49,8 @@ class IseoData:
     available: bool = True
     last_event: dict[str, Any] | None = None
     last_alert: dict[str, Any] | None = None
+    # Last open attributed to each lock user, keyed by "{user_type}_{uuid_hex}".
+    last_open_by_user: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 type IseoConfigEntry = ConfigEntry[IseoData]

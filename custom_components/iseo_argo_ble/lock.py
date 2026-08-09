@@ -428,6 +428,11 @@ class IseoLockEntity(LockEntity):
         _LOGGER.debug("Door opened by %s (%s)", opened_by, event)
         self.hass.bus.async_fire(EVENT_LOCK_OPENED, payload)
         self._entry.runtime_data.last_event = payload
+        if user is not None:
+            # Record this open against the specific lock user so the per-user
+            # switch entity can surface "last opened" for that credential.
+            key = f"{user.user_type}_{user.uuid_hex}"
+            self._entry.runtime_data.last_open_by_user[key] = payload
         self._publish_update()
 
     def _match_log_user(self, log: LogEntry) -> UserEntry | None:

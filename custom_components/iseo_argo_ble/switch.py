@@ -8,13 +8,14 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import IseoConfigEntry, get_ble_device
 from .client import USER_TYPE_BT, USER_TYPE_PIN, USER_TYPE_RFID, UserEntry
-from .const import CONF_ADMIN_UUID, CONF_USER_MAPPING, DOMAIN
+from .const import CONF_ADMIN_UUID, CONF_USER_MAPPING, DOMAIN, signal_update
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,6 +91,14 @@ class IseoUserSwitch(CoordinatorEntity, SwitchEntity):
         await super().async_added_to_hass()
         await self._resolve_linked_user()
         self.async_on_remove(self._entry.add_update_listener(self._on_options_updated))
+        # Refresh when the lock attributes a new open (updates "last opened").
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                signal_update(self._entry.entry_id),
+                self.async_write_ha_state,
+            )
+        )
 
     async def _on_options_updated(self, _hass: Any, _entry: Any) -> None:
         """Re-resolve linked user name when options change."""
@@ -116,12 +125,18 @@ class IseoUserSwitch(CoordinatorEntity, SwitchEntity):
             "uuid": self._uuid_hex,
         }
 
-        mapping = self._entry.options.get(CONF_USER_MAPPING, {})
         user_key = f"{self._user_type}_{self._uuid_hex}"
+
+        mapping = self._entry.options.get(CONF_USER_MAPPING, {})
         if linked_user_id := mapping.get(user_key):
             attrs["linked_ha_user_id"] = linked_user_id
             if self._linked_ha_user_name is not None:
                 attrs["linked_ha_user_name"] = self._linked_ha_user_name
+
+        # Last door open attributed to this specific user (from the access log).
+        if record := self._entry.runtime_data.last_open_by_user.get(user_key):
+            attrs["last_opened"] = record.get("timestamp")
+            attrs["last_open_event"] = record.get("event")
 
         return attrs
 
