@@ -337,11 +337,14 @@ class IseoLockEntity(LockEntity):
 
         user = self._match_log_user(log)
         if user is None:
-            # No directory match (or no admin client to read the directory);
-            # fall back to whatever readable identity the log carries.
+            # No directory match (or no admin client to read the directory).
+            # The lock embeds a human-readable name in extra_description (the
+            # same "Custom Description" a gateway open sets), so prefer it;
+            # user_info usually holds the UUID. This means we can still name
+            # the opener without the admin `read_users` command.
             opened_by: str | None = (
-                (log.user_info or "").strip()
-                or (log.extra_description or "").strip()
+                (log.extra_description or "").strip()
+                or (log.user_info or "").strip()
                 or None
             )
         else:

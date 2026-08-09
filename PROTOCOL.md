@@ -386,12 +386,18 @@ Decoded by `LogEntry._from_bytes`; matches the app's `SbtLogEntryCodec`:
 > **Determining who opened the door:** there are **no per-credential open codes**. Any
 > authorized open — whatever the method (app, RFID, PIN, fingerprint) — is logged as
 > code **8 "Door Open"**; only mechanical, internal-handle and remote opens get distinct
-> codes (32/33/34/45/102/103). The opener's identity is split across the entry's two
-> 32-char fields (`user_info` and `extra_description`) — depending on credential, one
-> holds the user's UUID and the other a name — so match **either** field against **either**
-> the UUID or the stored name in the user directory. Once the lock user is found, map it
-> to a linked Home Assistant account via `CONF_USER_MAPPING` (`{user_type}_{uuid_hex}` →
-> HA user id), the same mapping the per-user switches use.
+> codes (32/33/34/45/102/103). The opener's identity is in the entry itself:
+> `extra_description` holds the **human-readable name** (this is the same "Custom
+> Description" / Tag 64 a gateway open sets, e.g. "Home Assistant"; for credential opens
+> the lock stores the user's name), and `user_info` holds the **UUID**.
+>
+> **No admin command is required to name the opener** — reading the log is a *gateway*
+> command (`gw_read_unread_logs`, opcode 66), and the name is already in
+> `extra_description`. The admin `read_users` command is only needed to (a) canonicalise
+> the name against the user directory and (b) map the person to a linked Home Assistant
+> account via `CONF_USER_MAPPING` (`{user_type}_{uuid_hex}` → HA user id), the same
+> mapping the per-user switches use. Matching is done against **either** field vs **either**
+> the UUID or the stored name, to be robust to per-credential differences.
 >
 > The integration implements this in `lock.py` (`_match_log_user` / `_fire_open_event`):
 > it filters the drained unread log to the newest open entry and fires
