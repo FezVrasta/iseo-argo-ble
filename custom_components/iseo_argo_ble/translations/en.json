@@ -1,1 +1,148 @@
-../strings.json
+{
+  "config": {
+    "abort": {
+      "already_configured": "Device is already configured",
+      "no_devices_found": "No devices found on the network",
+      "not_iseo_device": "This device does not appear to be an ISEO lock."
+    },
+    "error": {
+      "auth_failed": "The lock rejected the request. Make sure the Argo app is closed, then try again \u2014 scan a valid Master Card on the lock (the LED will blink green on success).",
+      "cannot_connect": "Could not connect to the lock. Check it is powered on and within Bluetooth range.",
+      "unknown": "An unexpected error occurred. Check the Home Assistant logs for details.",
+      "invalid_admin_identity": "The provided admin identity is invalid."
+    },
+    "flow_title": "{name}",
+    "step": {
+      "bluetooth_confirm": {
+        "description": "Found a new ISEO lock nearby: **{name}**.\n\nClick **Submit** to begin setup.",
+        "title": "ISEO lock discovered"
+      },
+      "gw_register": {
+        "description": "To register Home Assistant as a Gateway:\n\n**Warning:** Close the ARGO app before clicking Submit.\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully.",
+        "title": "Register gateway",
+        "data": {
+          "enable_admin": "Enable user management"
+        },
+        "data_description": {
+          "enable_admin": "Allows Home Assistant to enable or disable lock users from the UI. A second identity is registered on the lock during setup — no extra steps needed."
+        }
+      },
+      "gw_fetch_users": {
+        "title": "Fetch User List",
+        "description": "To link your Argo users to Home Assistant accounts, the integration must download the user list from the lock.\n\n**Warning:** Close the ARGO app before clicking Submit.\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
+      },
+      "map_users": {
+        "title": "Link Argo Users to Home Assistant",
+        "description": "Select the Home Assistant account for each Argo user found on the lock. Leave a field empty to keep those events anonymous.",
+        "data": {
+          "ignore_all": "Skip this step and finish setup"
+        }
+      },
+      "admin_choice": {
+        "title": "Administrative Access",
+        "description": "Choose how to handle administrative tasks. **Advanced features like PIN code management and user list updates are ONLY available if you configure an Admin identity.**",
+        "data": {
+          "admin_choice": "Administrative Method"
+        }
+      },
+      "admin_setup": {
+        "title": "Configure Admin Identity",
+        "description": "Home Assistant will create a secure identity to manage your lock. You will need to add this identity in the Argo app and enable **VIP** and **Login** permissions."
+      },
+      "admin_enroll": {
+        "title": "Add to Argo App",
+        "description": "Add the following **ARGO UID** as a new **Phone with ARGO UID** user in the Argo app:\n\n1. Open the **Argo app**, tap your lock, then go to **Users → + → Phone with ARGO UID**\n2. Enter a name (e.g., *HA Admin*), copy the UID below and paste it in the app, then tap **Save**\n3. Tap the new user and enable **Login** and **VIP** permissions.\n\n**Warning:** The next step will open the lock. Once you have completed the steps above, click **Submit** to finish setup.",
+        "data": {
+          "uuid_display": "ARGO UID (Copy this)"
+        }
+      },
+      "user": {
+        "data": {
+          "address": "Device"
+        },
+        "data_description": {
+          "address": "Select the ISEO lock to set up."
+        },
+        "description": "Select your lock from the list of nearby ISEO locks, sorted by signal strength. If your lock is not listed, make sure it is powered on and within Bluetooth range, then click Submit to scan again."
+      }
+    }
+  },
+  "options": {
+    "abort": {
+      "no_admin_configured": "User management is not available. No admin identity is configured for this lock."
+    },
+    "step": {
+      "init": {
+        "title": "Lock Management",
+        "description": "Choose what you would like to manage for this lock.",
+        "data": {
+          "management_choice": "I want to..."
+        }
+      },
+      "user_management_refresh": {
+        "title": "Update User List",
+        "description": "To manage user linking, Home Assistant must update the user list from the lock.\n\n**Warning:** Close the ARGO app before clicking Submit.\n\n1. Click **Submit** below.\n2. **Within 30 seconds**, scan your physical **Master Card** on the lock.\n\nThe lock will blink green once the card is read successfully."
+      },
+      "admin_identity": {
+        "title": "Admin Identity Management",
+        "description": "Configure an existing Argo Admin Phone identity. This allows Home Assistant to manage users and PINs directly without requiring a Master Card scan for every change.",
+        "data": {
+          "admin_action": "Action"
+        }
+      },
+      "map_users": {
+        "title": "Link Argo Users to Home Assistant",
+        "description": "Select the Home Assistant account for each Argo user below. Leave a field empty to keep those events anonymous. Found {count} users.",
+        "data": {}
+      },
+      "admin_enroll": {
+        "title": "Add to Argo App",
+        "description": "Add the following **ARGO UID** as a new **Phone with ARGO UID** user in the Argo app:\n\n1. Open the **Argo app**, tap your lock, then go to **Users → + → Phone with ARGO UID**\n2. Enter a name (e.g., *HA Admin*), copy the UID below and paste it in the app, then tap **Save**\n3. Tap the new user and enable **Login** and **VIP** permissions.\n\n**Warning:** The next step will open the lock. Once you have completed the steps above, click **Submit** to activate and store the credentials.",
+        "data": {
+          "uuid_display": "ARGO UID (Copy this)"
+        }
+      }
+    }
+  },
+  "selector": {
+    "management_choice": {
+      "options": {
+        "users": "Manage User Linking"
+      }
+    },
+    "admin_choice": {
+      "options": {
+        "persistent": "Configure Admin Identity (Enable all features)",
+        "none": "Disable advanced features (Logs only)"
+      }
+    },
+    "admin_action": {
+      "options": {
+        "setup": "Configure/Rotate Admin Identity",
+        "none": "Keep current configuration",
+        "remove": "Remove existing admin identity"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "last_event": {
+        "name": "Last Event"
+      },
+      "battery": {
+        "name": "Battery"
+      }
+    }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "Could not connect to the lock."
+    },
+    "lock_not_supported": {
+      "message": "Manual locking is not supported by this device. The lock will automatically re-latch after being opened."
+    },
+    "lock_rejected_identity": {
+      "message": "Lock rejected the identity. Ensure the UUID is registered in the Argo app."
+    }
+  }
+}

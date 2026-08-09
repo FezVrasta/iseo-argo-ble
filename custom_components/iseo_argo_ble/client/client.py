@@ -812,6 +812,10 @@ class IseoClient:
         self._ta = 1
         self._pl_key = _BASE_PL_KEY
         self._sig_key = _BASE_SIG_KEY
+        # Resolved per-connection from the GATT (some locks don't expose the
+        # default 0x0001/0x0002 SLIP characteristics); default to the constants.
+        self._s2c_uuid = _S2C_UUID
+        self._c2s_uuid = _C2S_UUID
 
     def update_ble_device(self, device: Any) -> None:
         """Update the BLEDevice used for the next connection attempt."""
@@ -843,7 +847,7 @@ class IseoClient:
     async def _send_raw(self, client: BleakClient, data: bytes) -> None:
         framed = _slip_encode(data)
         _LOGGER.debug("→ BLE [%dB] %s", len(framed), framed.hex())
-        await client.write_gatt_char(_C2S_UUID, framed, response=False)
+        await client.write_gatt_char(self._c2s_uuid, framed, response=False)
 
     async def _send_csl(self, client: BleakClient, ft: int, raw: bytes) -> None:
         frame = _encode_csl(ft, self._sid, self._ta, raw, self._pl_key, self._sig_key)
@@ -898,6 +902,7 @@ class IseoClient:
         if self._ble_device is not None and _bleak_establish_connection is not None:
             client = await _bleak_establish_connection(BleakClient, self._ble_device, self._address)
             try:
+                self._resolve_io_characteristics(client)
                 yield client
             finally:
                 await client.disconnect()
@@ -916,7 +921,51 @@ class IseoClient:
                     self._address,
                 )
             async with BleakClient(self._address, timeout=timeout) as client:
+                self._resolve_io_characteristics(client)
                 yield client
+
+    def _resolve_io_characteristics(self, client: BleakClient) -> None:
+        """Resolve the SLIP notify (S2C) and write (C2S) characteristics.
+
+        ISEO models don't all expose the same characteristic UUIDs — the app
+        ships a default pair (0x0001/0x0002) and an "extra" pair (0x0003/0x0004),
+        and some locks use different ones entirely. Prefer the defaults when the
+        lock exposes them (unchanged behaviour); otherwise discover the notify
+        and write characteristics from the ISEO service by their properties.
+        Falls back to the constants on any error.
+        """
+        self._s2c_uuid = _S2C_UUID
+        self._c2s_uuid = _C2S_UUID
+        try:
+            service = client.services.get_service(BLE_SERVICE_UUID)
+            if service is None:
+                _LOGGER.debug("ISEO service %s not found; using default I/O chars", BLE_SERVICE_UUID)
+                return
+            chars = service.characteristics
+            uuids = {c.uuid.lower() for c in chars}
+
+            if _S2C_UUID.lower() not in uuids:
+                notify = next(
+                    (c for c in chars if {"notify", "indicate"} & set(c.properties)), None
+                )
+                if notify is not None:
+                    self._s2c_uuid = notify.uuid
+                    _LOGGER.info("Using notify characteristic %s (0x0001 absent)", notify.uuid)
+
+            if _C2S_UUID.lower() not in uuids:
+                write = next(
+                    (
+                        c
+                        for c in chars
+                        if {"write", "write-without-response"} & set(c.properties)
+                    ),
+                    None,
+                )
+                if write is not None:
+                    self._c2s_uuid = write.uuid
+                    _LOGGER.info("Using write characteristic %s (0x0002 absent)", write.uuid)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Characteristic resolution failed (%s); using defaults", exc)
 
     # ── ECDH handshake ─────────────────────────────────────────────────────
     async def _handshake(self, client: BleakClient) -> None:
@@ -1004,7 +1053,7 @@ class IseoClient:
         """
         _LOGGER.debug("Connecting to %s", self._address)
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
 
             try:
                 await self._handshake(client)
@@ -1051,7 +1100,7 @@ class IseoClient:
 
         _LOGGER.debug("Connecting to %s for Gateway Open", self._address)
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
             await self._handshake(client)
 
             try:
@@ -1089,7 +1138,7 @@ class IseoClient:
         """
         _LOGGER.debug("Reading state from %s", self._address)
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
 
             try:
                 await self._handshake(client)
@@ -1166,7 +1215,7 @@ class IseoClient:
         entries: list[LogEntry] = []
 
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
 
             try:
                 await self._handshake(client)
@@ -1247,7 +1296,7 @@ class IseoClient:
         entries: list[UserEntry] = []
 
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
 
             try:
                 await self._handshake(client)
@@ -1476,7 +1525,7 @@ class IseoClient:
 
         # Single session: Master Card scan authorises the entire session.
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
             await self._handshake(client)
 
             try:
@@ -1527,7 +1576,7 @@ class IseoClient:
         """
         _LOGGER.debug("Registering new identity %s on lock %s (skip_login=%s)", new_uuid_bytes.hex(), self._address, skip_login)
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
             await self._handshake(client)
 
             try:
@@ -1569,7 +1618,7 @@ class IseoClient:
         """
         _LOGGER.debug("Registering identity on lock %s", self._address)
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
             await self._handshake(client)
 
             try:
@@ -1609,7 +1658,7 @@ class IseoClient:
 
         _LOGGER.debug("Registering PIN user %s on lock %s (skip_login=%s)", pin_uuid_bytes.hex(), self._address, skip_login)
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
             await self._handshake(client)
 
             try:
@@ -1682,7 +1731,7 @@ class IseoClient:
         """
         _LOGGER.debug("set_user_admin(%s, type=%d, admin=%s)", uuid_hex, user_type, admin)
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
             await self._handshake(client)
             try:
                 await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
@@ -1779,7 +1828,7 @@ class IseoClient:
         """
         _LOGGER.debug("set_user_disabled(%s, type=%d, disabled=%s)", uuid_hex, user_type, disabled)
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
             await self._handshake(client)
             try:
                 await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
@@ -1874,7 +1923,7 @@ class IseoClient:
         entries: list[LogEntry] = []
 
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
             await self._handshake(client)
 
             try:
@@ -1957,7 +2006,7 @@ class IseoClient:
 
         _LOGGER.debug("Registering Gateway for log notifications on %s", self._address)
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
             await self._handshake(client)
 
             try:
@@ -2022,7 +2071,7 @@ class IseoClient:
             self._address,
         )
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
             await self._handshake(client)
 
             try:
@@ -2092,7 +2141,7 @@ class IseoClient:
 
         _LOGGER.debug("Unregistering Gateway for log notifications on %s", self._address)
         async with self._connected_client(connect_timeout) as client:
-            await client.start_notify(_S2C_UUID, self._on_notify)
+            await client.start_notify(self._s2c_uuid, self._on_notify)
             await self._handshake(client)
 
             try:
