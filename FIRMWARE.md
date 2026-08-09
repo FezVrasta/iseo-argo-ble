@@ -27,6 +27,23 @@ Flutter + Firebase, but Firebase is used for accounts/cloud sharing, not firmwar
 Only the `.ifb` **header** is human-readable (product id + version, e.g. `MH15K 2.3.0`);
 the actual code is encrypted, so the images are not useful for static analysis.
 
+## Integrity & signing — not user-modifiable
+
+These images cannot be edited and re-flashed without ISEO's keys:
+
+- **Bluetooth module (`.zip`)** — **signed** (Nordic Secure DFU). The `.dat` init
+  packet is a `signed_command` carrying a SHA-256 hash of the firmware and a 64-byte
+  ECDSA (P-256) signature, which the nRF bootloader verifies against a public key baked
+  into the device. Modifying the `.bin` invalidates the hash/signature and the bootloader
+  rejects it.
+- **Main board (`.ifb`) / plates (`.bic`)** — **encrypted** (AES; `.ifb` header
+  `[T : 0x03]`) and decrypted/authenticated on-device by the ISEO update protocol. Without
+  the key the payload can't be read or meaningfully altered.
+
+Practical consequence: there is no way for this project to patch or downgrade the lock
+firmware. A firmware-level fix (e.g. for the polling-crash bug) can only come from ISEO
+shipping a corrected build that is flashed through the official Argo app.
+
 ## Naming
 
 8-character code `MH` + 6. The trailing group tends to denote the component/model line
