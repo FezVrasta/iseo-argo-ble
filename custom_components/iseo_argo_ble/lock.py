@@ -20,7 +20,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 
 from . import IseoConfigEntry, get_ble_device
 from .client import (
@@ -42,6 +42,10 @@ from .const import (
     EVENT_LOCK_OPENED,
     signal_update,
 )
+
+# Trailing debounce (seconds) for the on-open log read: back-to-back
+# open/close events within this window collapse into a single read at the tail.
+_INVESTIGATE_DEBOUNCE = 5.0
 
 # Access-log event codes that represent an actual door open (see
 # LOG_EVENT_CODES.md). Authorized opens (app/RFID/PIN/fingerprint) are all
@@ -130,6 +134,7 @@ class IseoLockEntity(LockEntity):
         self._entry = entry
         self._relock_task: asyncio.Task[None] | None = None
         self._open_investigation_task: asyncio.Task[None] | None = None
+        self._investigate_unsub: CALLBACK_TYPE | None = None
         self._passive_unsub: CALLBACK_TYPE | None = None
         self._availability_unsub: CALLBACK_TYPE | None = None
         self.client: IseoClient = client
@@ -170,6 +175,7 @@ class IseoLockEntity(LockEntity):
 
         self.async_on_remove(self._cancel_relock_task)
         self.async_on_remove(self._cancel_open_investigation)
+        self.async_on_remove(self._cancel_investigation_timer)
 
     def _register_passive_callback(self) -> None:
         """Register (or re-register) the passive BLE advertisement callback."""
@@ -268,8 +274,9 @@ class IseoLockEntity(LockEntity):
 
         new_locked = state.door_closed
         # door_closed True = closed/locked; a True -> False change is a door open.
+        door_changed = new_locked != self._attr_is_locked
         door_opened = self._attr_is_locked and not new_locked
-        if new_locked != self._attr_is_locked:
+        if door_changed:
             _LOGGER.debug(
                 "Passive advertisement: door_closed=%s → is_locked=%s",
                 state.door_closed,
@@ -278,9 +285,11 @@ class IseoLockEntity(LockEntity):
             self._attr_is_locked = new_locked
         self.async_write_ha_state()
 
-        if door_opened:
-            # A physical open (HA-initiated opens already flip is_locked before
-            # the advertisement arrives, so they never reach here).
+        # A physical open (HA-initiated opens flip is_locked before the
+        # advertisement arrives, so they never reach here) arms a debounced log
+        # read; any further open/close churn while it's pending extends the
+        # window, so back-to-back events yield a single read at the tail.
+        if door_opened or (door_changed and self._investigate_unsub is not None):
             self._schedule_open_investigation()
 
     @callback
@@ -314,12 +323,37 @@ class IseoLockEntity(LockEntity):
             self.async_write_ha_state()
             self._publish_update()
 
+    @callback
     def _schedule_open_investigation(self) -> None:
-        """Read who opened the door without blocking the advertisement callback."""
+        """(Re)arm the trailing debounce for the on-open log read.
+
+        Called from the advertisement callback on each open (and on churn while
+        armed); restarting the timer means a single read runs once the door
+        activity has settled, instead of one per event.
+        """
+        if self._investigate_unsub is not None:
+            self._investigate_unsub()
+        self._investigate_unsub = async_call_later(
+            self.hass, _INVESTIGATE_DEBOUNCE, self._run_investigation
+        )
+
+    @callback
+    def _run_investigation(self, _now: datetime) -> None:
+        """Debounce elapsed — start a single log read (unless one is running)."""
+        self._investigate_unsub = None
         if self._open_investigation_task and not self._open_investigation_task.done():
-            # An investigation is already running; don't stack connections.
+            # An investigation is already running; it drains all unread anyway.
             return
-        self._open_investigation_task = self.hass.async_create_task(self._investigate_open())
+        self._open_investigation_task = self.hass.async_create_task(
+            self._investigate_open()
+        )
+
+    @callback
+    def _cancel_investigation_timer(self) -> None:
+        """Cancel a pending debounced log read."""
+        if self._investigate_unsub is not None:
+            self._investigate_unsub()
+            self._investigate_unsub = None
 
     async def _investigate_open(self) -> None:
         """Connect once after a physical door-open to find out who opened it.
