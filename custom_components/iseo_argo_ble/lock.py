@@ -17,6 +17,7 @@ from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
 from homeassistant.components.lock import LockEntity
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -95,6 +96,9 @@ _UNAVAILABLE_AFTER = timedelta(minutes=10)
 _CALLBACK_REFRESH_AFTER = timedelta(minutes=2)
 
 
+SERVICE_DRAIN_LOGS = "drain_logs"
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: IseoConfigEntry,
@@ -108,6 +112,9 @@ async def async_setup_entry(
                 entry.runtime_data.client,
             )
         ],
+    )
+    entity_platform.async_get_current_platform().async_register_entity_service(
+        SERVICE_DRAIN_LOGS, None, "async_drain_logs"
     )
 
 
@@ -354,6 +361,21 @@ class IseoLockEntity(LockEntity):
         if self._investigate_unsub is not None:
             self._investigate_unsub()
             self._investigate_unsub = None
+
+    async def async_drain_logs(self) -> None:
+        """Service action: read and drain the lock's unread access log now.
+
+        Runs the same investigation as an on-open read (draining the full unread
+        backlog and updating the last event / per-user "last opened"), on demand
+        and independent of the door-open trigger and its debounce.
+        """
+        self._cancel_investigation_timer()
+        if get_ble_device(self.hass, self._entry) is None:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+            )
+        await self._investigate_open()
 
     async def _investigate_open(self) -> None:
         """Connect once after a physical door-open to find out who opened it.

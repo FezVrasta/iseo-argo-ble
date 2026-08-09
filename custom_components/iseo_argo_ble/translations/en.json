@@ -168,6 +168,12 @@
       "alert": "Security alert"
     }
   },
+  "services": {
+    "drain_logs": {
+      "name": "Drain access log",
+      "description": "Connect to the lock and read (drain) its unread access log now, updating the last event and each user's last-opened attribute without waiting for a door open."
+    }
+  },
   "exceptions": {
     "cannot_connect": {
       "message": "Could not connect to the lock."

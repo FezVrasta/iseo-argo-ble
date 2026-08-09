@@ -1,0 +1,5 @@
+drain_logs:
+  target:
+    entity:
+      integration: iseo_argo_ble
+      domain: lock
