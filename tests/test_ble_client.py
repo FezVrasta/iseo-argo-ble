@@ -30,6 +30,7 @@ def identity():
     uuid_bytes = b"I" * 16
     return uuid_bytes, priv
 
+
 @pytest.mark.asyncio
 async def test_read_state_high_level(identity):
     uuid_bytes, priv = identity
@@ -41,17 +42,9 @@ async def test_read_state_high_level(identity):
     # Mock _recv_sbt to return a successful TLV_INFO response
     # Tag 5: SystemState=0x0840 (door closed, battery OK), Tag 4: Caps=0x80, Tag 2: FW
     system_state = 0x0800 | (2 << 5)
-    payload = (
-        bytes([5, 2]) + struct.pack(">H", system_state) +
-        bytes([4, 1, 0x80]) +
-        bytes([2, 8]) + b"X1R  123"
-    )
+    payload = bytes([5, 2]) + struct.pack(">H", system_state) + bytes([4, 1, 0x80]) + bytes([2, 8]) + b"X1R  123"
 
-    client._recv_sbt = AsyncMock(return_value={
-        "status": _SBT_STATUS_OK,
-        "opcode": _OP_TLV_INFO,
-        "payload": payload
-    })
+    client._recv_sbt = AsyncMock(return_value={"status": _SBT_STATUS_OK, "opcode": _OP_TLV_INFO, "payload": payload})
     client._send_sbt = AsyncMock()
 
     # Mock the connection context manager
@@ -73,6 +66,7 @@ async def test_read_state_high_level(identity):
     assert state.firmware_info == "X1R  123"
     client._send_sbt.assert_called_once()
 
+
 @pytest.mark.asyncio
 async def test_open_lock_high_level(identity):
     uuid_bytes, priv = identity
@@ -81,7 +75,7 @@ async def test_open_lock_high_level(identity):
     client._handshake = AsyncMock()
     client._recv_sbt = AsyncMock(return_value={"status": _SBT_STATUS_OK})
     client._send_sbt = AsyncMock()
-    client._recv_csl = AsyncMock() # for the election wait
+    client._recv_csl = AsyncMock()  # for the election wait
 
     mock_bleak = MagicMock()
     mock_bleak.start_notify = AsyncMock()
@@ -92,7 +86,7 @@ async def test_open_lock_high_level(identity):
 
     client._send_sbt.assert_called_once()
     args, kwargs = client._send_sbt.call_args
-    assert args[1] == 43 # _OP_TLV_OPEN
+    assert args[1] == 43  # _OP_TLV_OPEN
 
 
 def make_char(uuid, properties):

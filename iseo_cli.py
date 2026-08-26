@@ -404,7 +404,9 @@ async def cmd_register_admin(args: argparse.Namespace) -> None:
                 connect_timeout=args.timeout,
             )
     except IseoAuthError as exc:
-        sys.exit(f"Auth failed: {exc}\nMake sure {'you scanned the Master Card first' if args.master else 'your identity has admin (Login+VIP) privileges'}.")
+        sys.exit(
+            f"Auth failed: {exc}\nMake sure {'you scanned the Master Card first' if args.master else 'your identity has admin (Login+VIP) privileges'}."
+        )
     except Exception as exc:
         sys.exit(f"Registration failed: {exc}")
 
@@ -929,7 +931,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--register-admin", action="store_true", help="Also register a BT_SMARTPHONE admin identity in the same session"
     )
     p_reg_gw.add_argument(
-        "--admin-output", metavar="PATH", type=Path, default=None,
+        "--admin-output",
+        metavar="PATH",
+        type=Path,
+        default=None,
         help="Where to save the admin identity JSON (default: <identity>.admin.json)",
     )
 
@@ -946,7 +951,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Where to save the new admin identity JSON (default: <identity>.admin.json)",
     )
-    p_reg_admin.add_argument("--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)")
+    p_reg_admin.add_argument(
+        "--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)"
+    )
 
     p_reg_pin = sub.add_parser("register-pin", help="Register/Update a PIN user")
     p_reg_pin.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")

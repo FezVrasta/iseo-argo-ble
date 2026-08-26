@@ -340,9 +340,7 @@ class IseoLockEntity(LockEntity):
         """
         if self._investigate_unsub is not None:
             self._investigate_unsub()
-        self._investigate_unsub = async_call_later(
-            self.hass, _INVESTIGATE_DEBOUNCE, self._run_investigation
-        )
+        self._investigate_unsub = async_call_later(self.hass, _INVESTIGATE_DEBOUNCE, self._run_investigation)
 
     @callback
     def _run_investigation(self, _now: datetime) -> None:
@@ -351,9 +349,7 @@ class IseoLockEntity(LockEntity):
         if self._open_investigation_task and not self._open_investigation_task.done():
             # An investigation is already running; it drains all unread anyway.
             return
-        self._open_investigation_task = self.hass.async_create_task(
-            self._investigate_open()
-        )
+        self._open_investigation_task = self.hass.async_create_task(self._investigate_open())
 
     @callback
     def _cancel_investigation_timer(self) -> None:
@@ -464,11 +460,7 @@ class IseoLockEntity(LockEntity):
             # same "Custom Description" a gateway open sets), so prefer it;
             # user_info usually holds the UUID. This means we can still name
             # the opener without the admin `read_users` command.
-            opened_by: str | None = (
-                (log.extra_description or "").strip()
-                or (log.user_info or "").strip()
-                or None
-            )
+            opened_by: str | None = (log.extra_description or "").strip() or (log.user_info or "").strip() or None
         else:
             opened_by = user.name.strip() or f"User {user.uuid_hex[:8]}"
             payload["uuid"] = user.uuid_hex

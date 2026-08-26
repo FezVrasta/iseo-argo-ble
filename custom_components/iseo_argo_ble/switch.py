@@ -19,6 +19,7 @@ from .const import CONF_ADMIN_UUID, CONF_USER_MAPPING, DOMAIN, signal_update
 
 _LOGGER = logging.getLogger(__name__)
 
+
 def _is_ha_internal_user(user: UserEntry, admin_uuid_hex: str) -> bool:
     """Return True for users that are internal HA identities (gateway or admin)."""
     if user.user_type == USER_TYPE_BT and user.inner_subtype == 17:
@@ -51,9 +52,7 @@ async def async_setup_entry(
 
     def _get_entities() -> list[IseoUserSwitch]:
         return [
-            IseoUserSwitch(entry, user)
-            for user in coordinator.data
-            if not _is_ha_internal_user(user, admin_uuid_hex)
+            IseoUserSwitch(entry, user) for user in coordinator.data if not _is_ha_internal_user(user, admin_uuid_hex)
         ]
 
     async_add_entities(_get_entities())

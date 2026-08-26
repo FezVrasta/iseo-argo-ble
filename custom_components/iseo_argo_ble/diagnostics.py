@@ -21,9 +21,7 @@ from .const import (
 TO_REDACT = {CONF_PRIV_SCALAR, CONF_UUID, CONF_ADMIN_PRIV_SCALAR, CONF_ADMIN_UUID}
 
 
-async def async_get_config_entry_diagnostics(
-    hass: HomeAssistant, entry: IseoConfigEntry
-) -> dict[str, Any]:
+async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: IseoConfigEntry) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
     runtime = entry.runtime_data
     address = entry.data[CONF_ADDRESS]

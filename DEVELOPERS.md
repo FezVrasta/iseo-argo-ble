@@ -154,6 +154,7 @@ Enable comprehensive debug logging during development:
 
 ```python
 import logging
+
 logging.basicConfig(level=logging.DEBUG)
 ```
 

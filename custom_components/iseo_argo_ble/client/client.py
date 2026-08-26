@@ -27,6 +27,7 @@ try:
 except ImportError:
     _bleak_establish_connection = None
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ec import ECDH, SECP224R1
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.cmac import CMAC
@@ -454,10 +455,11 @@ def _slip_decode(data: bytes) -> bytes:
 
 
 # Receive timeouts (seconds)
-_TIMEOUT_CSL_ELECTION = 2     # brief wait for unsolicited CSL frame after connect
-_TIMEOUT_HANDSHAKE = 15       # CSL handshake round-trips (includes crypto)
-_TIMEOUT_OP = 10              # standard SBT command/response
-_TIMEOUT_SLOW_OP = 30         # paginated reads (user blocks, log pages)
+_TIMEOUT_CSL_ELECTION = 2  # brief wait for unsolicited CSL frame after connect
+_TIMEOUT_HANDSHAKE = 15  # CSL handshake round-trips (includes crypto)
+_TIMEOUT_OP = 10  # standard SBT command/response
+_TIMEOUT_SLOW_OP = 30  # paginated reads (user blocks, log pages)
+
 
 # ── CRC helpers ───────────────────────────────────────────────────────────────
 def _make_crc8_table() -> list[int]:
@@ -609,9 +611,9 @@ def _tlv_user_pin(uuid_bytes: bytes, pin: str, name: str | None = None, disabled
         # end=today_midnight (zero-length range), which is immediately expired.
         # Lock interprets timestamps in local time, so compute local midnight as a UTC epoch value.
         now_local = time.localtime()
-        today_local_midnight = int(time.mktime(time.struct_time(
-            (now_local.tm_year, now_local.tm_mon, now_local.tm_mday, 0, 0, 0, 0, 0, -1)
-        )))
+        today_local_midnight = int(
+            time.mktime(time.struct_time((now_local.tm_year, now_local.tm_mon, now_local.tm_mday, 0, 0, 0, 0, 0, -1)))
+        )
         inner += _tlv(16, bytes([0x01]) + struct.pack(">II", today_local_midnight, today_local_midnight) + bytes(10))
 
     if pin:
@@ -1192,16 +1194,18 @@ class IseoClient:
             }
 
             if system_state is not None:
-                lock_state_kwargs.update({
-                    "battery_level": (system_state >> _STATE_BATTERY_SHIFT) & _STATE_BATTERY_MASK,
-                    "aux_battery_low": bool(system_state & _STATE_AUX_BATTERY_LOW),
-                    "invitation_pending": bool(system_state & _STATE_INVITATION_PENDING),
-                    "passage_mode_light": bool(system_state & _STATE_PASSAGE_MODE_LIGHT),
-                    "privacy_mode": bool(system_state & _STATE_PRIVACY_MODE),
-                    "passage_mode_normal": bool(system_state & _STATE_PASSAGE_MODE_NORMAL),
-                    "vip_mode": bool(system_state & _STATE_VIP_MODE),
-                    "operational_mode": system_state & _STATE_OP_MODE_MASK,
-                })
+                lock_state_kwargs.update(
+                    {
+                        "battery_level": (system_state >> _STATE_BATTERY_SHIFT) & _STATE_BATTERY_MASK,
+                        "aux_battery_low": bool(system_state & _STATE_AUX_BATTERY_LOW),
+                        "invitation_pending": bool(system_state & _STATE_INVITATION_PENDING),
+                        "passage_mode_light": bool(system_state & _STATE_PASSAGE_MODE_LIGHT),
+                        "privacy_mode": bool(system_state & _STATE_PRIVACY_MODE),
+                        "passage_mode_normal": bool(system_state & _STATE_PASSAGE_MODE_NORMAL),
+                        "vip_mode": bool(system_state & _STATE_VIP_MODE),
+                        "operational_mode": system_state & _STATE_OP_MODE_MASK,
+                    }
+                )
 
             cap_bytes = tags.get(4, b"\x00")
             capabilities = int.from_bytes(cap_bytes, "big") if cap_bytes else 0
@@ -1514,9 +1518,7 @@ class IseoClient:
             raise IseoConnectionError("No response to LOG_NOTIF_REGISTER") from exc
 
         if sbt.get("status") != _SBT_STATUS_OK:
-            raise IseoAuthError(
-                f"Log notification registration failed (status={sbt.get('status')})"
-            )
+            raise IseoAuthError(f"Log notification registration failed (status={sbt.get('status')})")
 
     async def setup_gateway(
         self,
@@ -1591,7 +1593,9 @@ class IseoClient:
         Requires self to have admin (Login + VIP) privileges.
         If skip_login is True, assumes lock is already in Master Mode (Master Card scanned).
         """
-        _LOGGER.debug("Registering new identity %s on lock %s (skip_login=%s)", new_uuid_bytes.hex(), self._address, skip_login)
+        _LOGGER.debug(
+            "Registering new identity %s on lock %s (skip_login=%s)", new_uuid_bytes.hex(), self._address, skip_login
+        )
         async with self._connected_client(connect_timeout) as client:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
@@ -1673,7 +1677,9 @@ class IseoClient:
         if not (4 <= len(pin) <= 14 and pin.isdigit()):
             raise ValueError("PIN must be 4-14 digits")
 
-        _LOGGER.debug("Registering PIN user %s on lock %s (skip_login=%s)", pin_uuid_bytes.hex(), self._address, skip_login)
+        _LOGGER.debug(
+            "Registering PIN user %s on lock %s (skip_login=%s)", pin_uuid_bytes.hex(), self._address, skip_login
+        )
         async with self._connected_client(connect_timeout) as client:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
@@ -1715,21 +1721,19 @@ class IseoClient:
             try:
                 sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP)
             except asyncio.TimeoutError as exc:
-                raise IseoConnectionError(
-                    "No response to register_pin_user (did you scan the Master Card?)"
-                ) from exc
+                raise IseoConnectionError("No response to register_pin_user (did you scan the Master Card?)") from exc
 
             status = sbt.get("status", 0)
             if status == 5:
                 raise IseoAuthError("Master Mode Required: Scan your physical Master Card on the lock first.")
             if status == 68:
-                raise IseoAuthError("Invalid PIN: The lock rejected this code (it may be too simple or already in use).")
+                raise IseoAuthError(
+                    "Invalid PIN: The lock rejected this code (it may be too simple or already in use)."
+                )
             if status != _SBT_STATUS_OK:
                 raise IseoAuthError(f"Register PIN User failed with status={status}")
 
-        _LOGGER.info(
-            "PIN user %s registered successfully on lock %s", pin_uuid_bytes.hex(), self._address
-        )
+        _LOGGER.info("PIN user %s registered successfully on lock %s", pin_uuid_bytes.hex(), self._address)
 
     async def set_user_admin(
         self,
@@ -1793,7 +1797,11 @@ class IseoClient:
                 if remaining == 0 or page_count == 0:
                     break
 
-            _LOGGER.debug("set_user_disabled: found %d users: %s", len(users_raw), [(ut, _parse_tlv(r).get(1, b"").hex()) for ut, r in users_raw])
+            _LOGGER.debug(
+                "set_user_disabled: found %d users: %s",
+                len(users_raw),
+                [(ut, _parse_tlv(r).get(1, b"").hex()) for ut, r in users_raw],
+            )
             match = next(
                 (raw for ut, raw in users_raw if ut == user_type and _parse_tlv(raw).get(1, b"").hex() == uuid_hex),
                 None,
@@ -1959,8 +1967,7 @@ class IseoClient:
                 raise IseoConnectionError("No response to TLV_LOGIN") from exc
             if login_resp.get("status", 0) != _SBT_STATUS_OK:
                 raise IseoAuthError(
-                    f"TLV_LOGIN failed with status={login_resp.get('status')} — "
-                    "UUID may not be registered on the lock"
+                    f"TLV_LOGIN failed with status={login_resp.get('status')} — UUID may not be registered on the lock"
                 )
 
             # OPCODE_TLV_LOG_NOTIFICATION_GET_UNREAD (66).
@@ -1986,9 +1993,7 @@ class IseoClient:
                 if status in _LOG_STATUS_EOF:
                     break
                 if status != _SBT_STATUS_OK:
-                    raise IseoAuthError(
-                        f"Lock returned status={status} for GET_UNREAD_LOGS"
-                    )
+                    raise IseoAuthError(f"Lock returned status={status} for GET_UNREAD_LOGS")
 
                 raw = sbt.get("payload", b"")
                 if len(raw) < 3:
@@ -2004,7 +2009,10 @@ class IseoClient:
                         _LOGGER.warning(
                             "gw_read_unread_logs: partial data at entry %d/%d "
                             "(got %d bytes, expected %d) — remaining entries dropped",
-                            i, entry_count, len(chunk), _LOG_ENTRY_SIZE,
+                            i,
+                            entry_count,
+                            len(chunk),
+                            _LOG_ENTRY_SIZE,
                         )
                         break
                     if chunk in seen:
@@ -2022,8 +2030,7 @@ class IseoClient:
                     break
             else:
                 _LOGGER.warning(
-                    "gw_read_unread_logs: stopped after %d pages (safety cap); "
-                    "more unread entries may remain",
+                    "gw_read_unread_logs: stopped after %d pages (safety cap); more unread entries may remain",
                     _MAX_LOG_DRAIN_PAGES,
                 )
 

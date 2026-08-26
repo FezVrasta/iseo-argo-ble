@@ -69,7 +69,9 @@ def get_ble_device(hass: HomeAssistant, entry: IseoConfigEntry) -> Any:
 async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool:
     """Set up ISEO Argo BLE Lock from a config entry."""
     address = entry.data[CONF_ADDRESS]
-    ble_device = (async_ble_device_from_address(hass, address, connectable=True) or async_ble_device_from_address(hass, address, connectable=False))
+    ble_device = async_ble_device_from_address(hass, address, connectable=True) or async_ble_device_from_address(
+        hass, address, connectable=False
+    )
     if ble_device is None:
         raise ConfigEntryNotReady(f"Could not find ISEO lock {address} — is it powered on and in range?")
 
@@ -103,6 +105,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool
 
     user_coordinator: DataUpdateCoordinator[list[UserEntry]] | None = None
     if admin_client is not None:
+
         async def _async_update_users() -> list[UserEntry]:
             """Fetch users from the lock."""
             _LOGGER.debug("Fetching users from lock %s", address)
