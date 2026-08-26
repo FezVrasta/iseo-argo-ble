@@ -11,10 +11,17 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from iseo_argo_ble.client import (
+    _C2S_UUID,
     _OP_TLV_INFO,
+    _S2C_UUID,
     _SBT_STATUS_OK,
+    BLE_SERVICE_UUID,
     IseoClient,
 )
+
+_OTHER_SERVICE_UUID = "00001801-0000-1000-8000-00805f9b34fb"
+_EXTRA_S2C_UUID = "00000003-0000-1000-8000-00805f9b34fb"
+_EXTRA_C2S_UUID = "00000004-0000-1000-8000-00805f9b34fb"
 
 
 @pytest.fixture
@@ -86,3 +93,86 @@ async def test_open_lock_high_level(identity):
     client._send_sbt.assert_called_once()
     args, kwargs = client._send_sbt.call_args
     assert args[1] == 43 # _OP_TLV_OPEN
+
+
+def make_char(uuid, properties):
+    char = MagicMock()
+    char.uuid = uuid
+    char.properties = properties
+    return char
+
+
+def make_service(uuid, characteristics):
+    service = MagicMock()
+    service.uuid = uuid
+    service.characteristics = characteristics
+    return service
+
+
+def make_bleak(services):
+    mock_bleak = MagicMock()
+    mock_bleak.services = services
+    return mock_bleak
+
+
+def resolve(identity, services):
+    """Run characteristic resolution against a mocked GATT and return the picks."""
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    client._resolve_io_characteristics(make_bleak(services))
+    return client._s2c_char, client._c2s_char
+
+
+def test_resolve_io_prefers_default_characteristics(identity):
+    s2c = make_char(_S2C_UUID, ["notify"])
+    c2s = make_char(_C2S_UUID, ["write-without-response"])
+    services = [make_service(BLE_SERVICE_UUID, [s2c, c2s])]
+
+    assert resolve(identity, services) == (s2c, c2s)
+
+
+def test_resolve_io_ignores_same_uuid_outside_iseo_service(identity):
+    """Regression: a duplicate 0x0001 made bleak refuse to resolve the UUID."""
+    decoy = make_char(_S2C_UUID, ["notify"])
+    s2c = make_char(_S2C_UUID, ["notify"])
+    c2s = make_char(_C2S_UUID, ["write-without-response"])
+    services = [
+        make_service(_OTHER_SERVICE_UUID, [decoy]),
+        make_service(BLE_SERVICE_UUID.upper(), [s2c, c2s]),
+    ]
+
+    assert resolve(identity, services) == (s2c, c2s)
+
+
+def test_resolve_io_picks_usable_duplicate_within_iseo_service(identity):
+    unusable = make_char(_S2C_UUID, ["read"])
+    s2c = make_char(_S2C_UUID, ["notify"])
+    c2s = make_char(_C2S_UUID, ["write-without-response"])
+    services = [make_service(BLE_SERVICE_UUID, [unusable, s2c, c2s])]
+
+    assert resolve(identity, services) == (s2c, c2s)
+
+
+def test_resolve_io_discovers_when_defaults_absent(identity):
+    s2c = make_char(_EXTRA_S2C_UUID, ["notify"])
+    c2s = make_char(_EXTRA_C2S_UUID, ["write"])
+    services = [make_service(BLE_SERVICE_UUID, [s2c, c2s])]
+
+    assert resolve(identity, services) == (s2c, c2s)
+
+
+def test_resolve_io_keeps_defaults_without_iseo_service(identity):
+    services = [make_service(_OTHER_SERVICE_UUID, [make_char(_S2C_UUID, ["notify"])])]
+
+    assert resolve(identity, services) == (_S2C_UUID, _C2S_UUID)
+
+
+def test_resolve_io_keeps_defaults_on_error(identity):
+    mock_bleak = MagicMock()
+    type(mock_bleak).services = property(lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+
+    client._resolve_io_characteristics(mock_bleak)
+
+    assert (client._s2c_char, client._c2s_char) == (_S2C_UUID, _C2S_UUID)
