@@ -39,6 +39,9 @@ _LOGGER = logging.getLogger(__name__)
 BLE_SERVICE_UUID = "00001000-d102-11e1-9b23-00025b00a6a6"
 _S2C_UUID = "00000001-0000-1000-8000-00805f9b34fb"  # notify  (lock → phone)
 _C2S_UUID = "00000002-0000-1000-8000-00805f9b34fb"  # write   (phone → lock)
+# Ordered by preference when several characteristics could serve a direction.
+_NOTIFY_PROPS = ("notify", "indicate")
+_WRITE_PROPS = ("write-without-response", "write")
 
 # ── ISEO advertisement detection ──────────────────────────────────────────────
 # ISEO locks advertise 16-bit service UUIDs that encode device type, system state,
@@ -790,18 +793,33 @@ def _parse_sbt(data: bytes) -> dict:
 
 # ── Main client ───────────────────────────────────────────────────────────────
 def _pick_char(
-    chars: list[BleakGATTCharacteristic], default_uuid: str, props: set[str]
+    chars: list[BleakGATTCharacteristic], default_uuid: str, props: tuple[str, ...]
 ) -> BleakGATTCharacteristic | None:
     """Pick one direction of the SLIP link out of the ISEO service's characteristics.
 
     A lock may expose the default UUID more than once, so prefer the instance
-    that actually carries the properties we need before falling back to
-    discovery by property alone.
+    carrying the properties we need before falling back to discovery by property
+    alone. `props` is ordered by preference: for writes, a characteristic taking
+    write-without-response beats one that only takes acknowledged writes.
     """
     same_uuid = [c for c in chars if c.uuid.lower() == default_uuid]
-    if same_uuid:
-        return next((c for c in same_uuid if props & set(c.properties)), same_uuid[0])
-    return next((c for c in chars if props & set(c.properties)), None)
+    candidates = same_uuid or chars
+    for prop in props:
+        for char in candidates:
+            if prop in char.properties:
+                return char
+    # The default characteristic is there but advertises none of the properties;
+    # use it anyway rather than picking an unrelated one.
+    return same_uuid[0] if same_uuid else None
+
+
+def _describe_gatt(client: BleakClient) -> str:
+    """Render the connected device's GATT layout for debug logs."""
+    lines = []
+    for service in client.services:
+        lines.append(f"  service {service.uuid}")
+        lines.extend(f"    char {c.uuid} [{','.join(c.properties)}]" for c in service.characteristics)
+    return "\n".join(lines)
 
 
 class IseoClient:
@@ -836,6 +854,7 @@ class IseoClient:
         # default 0x0001/0x0002 SLIP characteristics); default to the constants.
         self._s2c_char: BleakGATTCharacteristic | str = _S2C_UUID
         self._c2s_char: BleakGATTCharacteristic | str = _C2S_UUID
+        self._c2s_response = False
 
     def update_ble_device(self, device: Any) -> None:
         """Update the BLEDevice used for the next connection attempt."""
@@ -867,7 +886,7 @@ class IseoClient:
     async def _send_raw(self, client: BleakClient, data: bytes) -> None:
         framed = _slip_encode(data)
         _LOGGER.debug("→ BLE [%dB] %s", len(framed), framed.hex())
-        await client.write_gatt_char(self._c2s_char, framed, response=False)
+        await client.write_gatt_char(self._c2s_char, framed, response=self._c2s_response)
 
     async def _send_csl(self, client: BleakClient, ft: int, raw: bytes) -> None:
         frame = _encode_csl(ft, self._sid, self._ta, raw, self._pl_key, self._sig_key)
@@ -960,29 +979,46 @@ class IseoClient:
         """
         self._s2c_char = _S2C_UUID
         self._c2s_char = _C2S_UUID
+        self._c2s_response = False
         try:
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug("GATT layout of %s:\n%s", self._address, _describe_gatt(client))
+
             service_uuid = BLE_SERVICE_UUID.lower()
-            chars = [
-                char
-                for service in client.services
-                if service.uuid.lower() == service_uuid
-                for char in service.characteristics
-            ]
-            if not chars:
+            services = [s for s in client.services if s.uuid.lower() == service_uuid]
+            if not services:
                 _LOGGER.debug("ISEO service %s not found; using default I/O chars", BLE_SERVICE_UUID)
                 return
 
-            notify = _pick_char(chars, _S2C_UUID, {"notify", "indicate"})
-            if notify is not None:
+            # Both directions must come from the same service instance to be a
+            # working pair — a lock can expose the ISEO service more than once.
+            for service in services:
+                notify = _pick_char(service.characteristics, _S2C_UUID, _NOTIFY_PROPS)
+                write = _pick_char(service.characteristics, _C2S_UUID, _WRITE_PROPS)
+                if notify is None or write is None:
+                    continue
                 self._s2c_char = notify
-                if notify.uuid.lower() != _S2C_UUID:
-                    _LOGGER.info("Using notify characteristic %s (0x0001 absent)", notify.uuid)
-
-            write = _pick_char(chars, _C2S_UUID, {"write", "write-without-response"})
-            if write is not None:
                 self._c2s_char = write
-                if write.uuid.lower() != _C2S_UUID:
-                    _LOGGER.info("Using write characteristic %s (0x0002 absent)", write.uuid)
+                # BlueZ rejects an unacknowledged write on a characteristic that
+                # only takes acknowledged ones ("Failed to initiate write").
+                self._c2s_response = "write-without-response" not in write.properties
+                break
+            else:
+                _LOGGER.debug("No usable notify/write pair in the ISEO service; using defaults")
+                return
+
+            defaults = (
+                self._s2c_char.uuid.lower() == _S2C_UUID
+                and self._c2s_char.uuid.lower() == _C2S_UUID
+                and not self._c2s_response
+            )
+            _LOGGER.log(
+                logging.DEBUG if defaults else logging.INFO,
+                "SLIP characteristics: notify=%s write=%s (acknowledged writes: %s)",
+                self._s2c_char.uuid,
+                self._c2s_char.uuid,
+                self._c2s_response,
+            )
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("Characteristic resolution failed (%s); using defaults", exc)
 

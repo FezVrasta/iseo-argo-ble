@@ -170,3 +170,62 @@ def test_resolve_io_keeps_defaults_on_error(identity):
     client._resolve_io_characteristics(mock_bleak)
 
     assert (client._s2c_char, client._c2s_char) == (_S2C_UUID, _C2S_UUID)
+
+
+def test_resolve_io_prefers_unacknowledged_write(identity):
+    """A write-without-response char beats a write-only one with the same UUID."""
+    s2c = make_char(_S2C_UUID, ["notify"])
+    acknowledged = make_char(_C2S_UUID, ["write"])
+    unacknowledged = make_char(_C2S_UUID, ["write", "write-without-response"])
+    services = [make_service(BLE_SERVICE_UUID, [s2c, acknowledged, unacknowledged])]
+
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    client._resolve_io_characteristics(make_bleak(services))
+
+    assert client._c2s_char is unacknowledged
+    assert client._c2s_response is False
+
+
+def test_resolve_io_uses_acknowledged_write_when_only_option(identity):
+    """Regression: BlueZ raised "Failed to initiate write" on a write-only char."""
+    s2c = make_char(_S2C_UUID, ["notify"])
+    c2s = make_char(_C2S_UUID, ["write"])
+    services = [make_service(BLE_SERVICE_UUID, [s2c, c2s])]
+
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    client._resolve_io_characteristics(make_bleak(services))
+
+    assert client._c2s_char is c2s
+    assert client._c2s_response is True
+
+
+def test_resolve_io_pairs_within_one_service_instance(identity):
+    """Both directions must come from the same ISEO service instance."""
+    lone_notify = make_char(_S2C_UUID, ["notify"])
+    s2c = make_char(_S2C_UUID, ["notify"])
+    c2s = make_char(_C2S_UUID, ["write-without-response"])
+    services = [
+        make_service(BLE_SERVICE_UUID, [lone_notify]),
+        make_service(BLE_SERVICE_UUID, [s2c, c2s]),
+    ]
+
+    assert resolve(identity, services) == (s2c, c2s)
+
+
+@pytest.mark.asyncio
+async def test_send_raw_matches_the_resolved_write_mode(identity):
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    c2s = make_char(_C2S_UUID, ["write"])
+    services = [make_service(BLE_SERVICE_UUID, [make_char(_S2C_UUID, ["notify"]), c2s])]
+    mock_bleak = make_bleak(services)
+    mock_bleak.write_gatt_char = AsyncMock()
+
+    client._resolve_io_characteristics(mock_bleak)
+    await client._send_raw(mock_bleak, b"hello")
+
+    _args, kwargs = mock_bleak.write_gatt_char.call_args
+    assert mock_bleak.write_gatt_char.call_args[0][0] is c2s
+    assert kwargs["response"] is True
