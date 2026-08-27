@@ -210,6 +210,22 @@ _KDF_CONTEXT = bytes(a ^ b for a, b in zip(_CTX, _CM, strict=True))
 
 # ── Protocol constants ────────────────────────────────────────────────────────
 _SBT_PREAMBLE = 42602  # 0xA66A
+# ── Open types (SbtOpenType, TLV tag 48) ──────────────────────────────────────
+OPEN_TYPE_NORMAL = 0
+OPEN_TYPE_VIP_TOGGLE = 1
+OPEN_TYPE_PASSAGE_TOGGLE = 2
+OPEN_TYPE_VIP_ON = 3
+OPEN_TYPE_VIP_OFF = 4
+OPEN_TYPE_PASSAGE_ON = 5
+OPEN_TYPE_PASSAGE_OFF = 6
+
+# ── Validation modes (SbtOpenValidationMode, TLV tag 49) ──────────────────────
+VALIDATION_MODE_WHITELIST_CREDENTIAL = 0
+VALIDATION_MODE_VIRTUAL_CREDENTIAL = 1
+VALIDATION_MODE_WHITELIST_CARRIED_BT_GW = 2
+VALIDATION_MODE_CREDENTIAL_LESS = 3
+VALIDATION_MODE_WHITELIST_CARRIED_BT_READER = 4
+
 _ADDR_LOCK, _ADDR_APP = 1, 2
 _CSL_VERSION = 2
 _CSL_HEADER_SIZE = 8  # flags + sid + payload_len + ta + crc8
@@ -1149,12 +1165,15 @@ class IseoClient:
         _LOGGER.debug("exchangeInfo response: %s", info_resp)
 
     # ── Public API ─────────────────────────────────────────────────────────
-    async def open_lock(self, connect_timeout: float = 20.0) -> None:
+    async def open_lock(self, open_type: int = OPEN_TYPE_NORMAL, connect_timeout: float = 20.0) -> None:
         """
         Connect to the lock, authenticate, send TLV_OPEN, then disconnect.
         Standard opening mode (uses registered UUID/Key).
+
+        `open_type` selects a plain open or a passage/VIP mode change; the lock
+        applies the mode change as part of the same open.
         """
-        _LOGGER.debug("Connecting to %s", self._address)
+        _LOGGER.debug("Connecting to %s (open_type=%d)", self._address, open_type)
         async with self._connected_client(connect_timeout) as client:
             await client.start_notify(self._s2c_char, self._on_notify)
 
@@ -1171,10 +1190,10 @@ class IseoClient:
             pub_key = _pub_to_bytes(self._identity_priv)
 
             # Standard users use WHITELIST_CREDENTIAL (0).
-            val_mode = 0
+            val_mode = VALIDATION_MODE_WHITELIST_CREDENTIAL
 
             payload = (
-                _tlv(48, b"\x00")  # OpenType = NORMAL
+                _tlv(48, bytes([open_type]))  # OpenType
                 + _tlv(49, bytes([val_mode]))  # ValidationMode
                 + _tlv_user_bt(self._uuid_bytes, pub_key, self._subtype)  # UUID + PubKey + SubType
             )
@@ -1193,15 +1212,23 @@ class IseoClient:
 
         _LOGGER.info("Lock opened successfully (UUID=%s)", self._uuid_bytes.hex())
 
-    async def gw_open(self, remote_user_name: str = "Home Assistant", connect_timeout: float = 20.0) -> None:
+    async def gw_open(
+        self,
+        remote_user_name: str = "Home Assistant",
+        open_type: int = OPEN_TYPE_NORMAL,
+        connect_timeout: float = 20.0,
+    ) -> None:
         """
         Gateway-specific opening (CREDENTIAL_LESS).
         Requires the client to be registered as UserSubType.BT_GATEWAY.
+
+        `open_type` selects a plain open or a passage/VIP mode change; the lock
+        applies the mode change as part of the same open.
         """
         if self._subtype != UserSubType.BT_GATEWAY:
             raise ValueError("gw_open requires BT_GATEWAY subtype")
 
-        _LOGGER.debug("Connecting to %s for Gateway Open", self._address)
+        _LOGGER.debug("Connecting to %s for Gateway Open (open_type=%d)", self._address, open_type)
         async with self._connected_client(connect_timeout) as client:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
@@ -1215,8 +1242,8 @@ class IseoClient:
             desc_bytes = remote_user_name.encode("utf-8")
 
             payload = (
-                _tlv(48, b"\x00")  # OpenType = NORMAL
-                + _tlv(49, b"\x03")  # ValidationMode = CREDENTIAL_LESS (3)
+                _tlv(48, bytes([open_type]))  # OpenType
+                + _tlv(49, bytes([VALIDATION_MODE_CREDENTIAL_LESS]))  # ValidationMode
                 + _tlv_user_id(self._uuid_bytes, self._subtype)  # SbtUserId (Tag 1)
                 + _tlv(64, desc_bytes)  # Remote user description
             )

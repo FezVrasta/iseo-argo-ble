@@ -160,6 +160,11 @@
       "vip_mode": {
         "name": "VIP mode"
       }
+    },
+    "switch": {
+      "passage_mode": {
+        "name": "Passage mode"
+      }
     }
   },
   "device_automation": {

@@ -10,13 +10,20 @@ from typing import Any
 from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, derive_private_key
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .client import IseoClient, LockState, UserEntry
+from .client import (
+    OPEN_TYPE_PASSAGE_OFF,
+    OPEN_TYPE_PASSAGE_ON,
+    IseoAuthError,
+    IseoClient,
+    IseoConnectionError,
+    LockState,
+    UserEntry,
+)
 from .const import (
     ADMIN_USER_SUBTYPE,
     CONF_ADDRESS,
@@ -64,6 +71,44 @@ def get_ble_device(hass: HomeAssistant, entry: IseoConfigEntry) -> Any:
     """
     address = entry.data[CONF_ADDRESS]
     return async_ble_device_from_address(hass, address, connectable=True) or entry.runtime_data.last_ble_device
+
+
+async def async_send_open(
+    hass: HomeAssistant,
+    entry: IseoConfigEntry,
+    open_type: int,
+    remote_user_name: str = "Home Assistant",
+) -> None:
+    """Send an open command to the lock, serialised against other BLE work.
+
+    Passage and VIP mode changes ride on the same open command as a plain
+    unlock — only the open type differs.
+    """
+    ble_device = get_ble_device(hass, entry)
+    if not ble_device:
+        raise IseoConnectionError(f"{entry.data[CONF_ADDRESS]}: no BLEDevice available")
+
+    runtime = entry.runtime_data
+    async with runtime.ble_lock:
+        runtime.client.update_ble_device(ble_device)
+        await runtime.client.gw_open(remote_user_name=remote_user_name, open_type=open_type)
+
+
+async def async_set_passage_mode(hass: HomeAssistant, entry: IseoConfigEntry, *, enabled: bool) -> None:
+    """Turn passage mode on or off, translating client errors for the UI."""
+    open_type = OPEN_TYPE_PASSAGE_ON if enabled else OPEN_TYPE_PASSAGE_OFF
+    try:
+        await async_send_open(hass, entry, open_type)
+    except IseoAuthError as exc:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="lock_rejected_identity",
+        ) from exc
+    except (TimeoutError, IseoConnectionError, OSError) as exc:
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="cannot_connect",
+        ) from exc
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool:
@@ -140,8 +185,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool
     if user_coordinator is not None:
         await user_coordinator.async_config_entry_first_refresh()
 
-    platforms = PLATFORMS if admin_client is not None else [p for p in PLATFORMS if p != Platform.SWITCH]
-    await hass.config_entries.async_forward_entry_setups(entry, platforms)
+    # Every platform loads regardless of user management: the switch platform
+    # also carries the passage mode switch, which only needs the gateway client.
+    # It also keeps setup symmetrical with async_unload_entry.
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 

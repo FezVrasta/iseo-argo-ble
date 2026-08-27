@@ -17,9 +17,14 @@ from iseo_argo_ble.client import (
     _S2C_UUID,
     _SBT_STATUS_OK,
     BLE_SERVICE_UUID,
+    OPEN_TYPE_NORMAL,
+    OPEN_TYPE_PASSAGE_OFF,
+    OPEN_TYPE_PASSAGE_ON,
     IseoClient,
+    UserSubType,
     _csl_header,
     _parse_csl_header,
+    _parse_tlv,
     _slip_encode,
 )
 
@@ -110,6 +115,7 @@ def make_service(uuid, characteristics):
 def make_bleak(services):
     mock_bleak = MagicMock()
     mock_bleak.services = services
+    mock_bleak.start_notify = AsyncMock()
     return mock_bleak
 
 
@@ -372,3 +378,76 @@ async def test_recv_csl_skips_frames_with_a_bad_header_crc(identity):
 
     assert hdr["session_id"] == 9
     assert hdr["crc8_ok"] is True
+
+
+def _open_payload(client):
+    """The TLVs of the single TLV_OPEN the client sent."""
+    opcode, payload = client._send_sbt.call_args[0][1], client._send_sbt.call_args[0][2]
+    assert opcode == 43  # _OP_TLV_OPEN
+    return _parse_tlv(payload)
+
+
+@pytest.mark.parametrize(
+    ("open_type", "expected"),
+    [
+        pytest.param(OPEN_TYPE_NORMAL, 0, id="normal"),
+        pytest.param(OPEN_TYPE_PASSAGE_ON, 5, id="passage-on"),
+        pytest.param(OPEN_TYPE_PASSAGE_OFF, 6, id="passage-off"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_open_lock_sends_the_requested_open_type(identity, open_type, expected):
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    client._handshake = AsyncMock()
+    client._recv_csl = AsyncMock()
+    client._recv_sbt = AsyncMock(return_value={"status": _SBT_STATUS_OK})
+    client._send_sbt = AsyncMock()
+
+    with patch.object(IseoClient, "_connected_client") as mock_conn:
+        mock_conn.return_value.__aenter__.return_value = make_bleak([])
+        await client.open_lock(open_type=open_type)
+
+    assert _open_payload(client)[48] == bytes([expected])
+
+
+@pytest.mark.parametrize(
+    ("open_type", "expected"),
+    [
+        pytest.param(OPEN_TYPE_NORMAL, 0, id="normal"),
+        pytest.param(OPEN_TYPE_PASSAGE_ON, 5, id="passage-on"),
+        pytest.param(OPEN_TYPE_PASSAGE_OFF, 6, id="passage-off"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_gw_open_sends_the_requested_open_type(identity, open_type, expected):
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv, subtype=UserSubType.BT_GATEWAY)
+    client._handshake = AsyncMock()
+    client._recv_csl = AsyncMock()
+    client._recv_sbt = AsyncMock(return_value={"status": _SBT_STATUS_OK})
+    client._send_sbt = AsyncMock()
+
+    with patch.object(IseoClient, "_connected_client") as mock_conn:
+        mock_conn.return_value.__aenter__.return_value = make_bleak([])
+        await client.gw_open(open_type=open_type)
+
+    payload = _open_payload(client)
+    assert payload[48] == bytes([expected])
+    assert payload[49] == b"\x03"  # ValidationMode stays CREDENTIAL_LESS
+
+
+@pytest.mark.asyncio
+async def test_open_lock_defaults_to_a_plain_open(identity):
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    client._handshake = AsyncMock()
+    client._recv_csl = AsyncMock()
+    client._recv_sbt = AsyncMock(return_value={"status": _SBT_STATUS_OK})
+    client._send_sbt = AsyncMock()
+
+    with patch.object(IseoClient, "_connected_client") as mock_conn:
+        mock_conn.return_value.__aenter__.return_value = make_bleak([])
+        await client.open_lock()
+
+    assert _open_payload(client)[48] == b"\x00"

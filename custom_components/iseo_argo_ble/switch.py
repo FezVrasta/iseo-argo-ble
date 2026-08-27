@@ -13,9 +13,10 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import IseoConfigEntry, get_ble_device
+from . import IseoConfigEntry, async_set_passage_mode, get_ble_device
 from .client import USER_TYPE_BT, USER_TYPE_PIN, USER_TYPE_RFID, UserEntry
 from .const import CONF_ADMIN_UUID, CONF_USER_MAPPING, DOMAIN, signal_update
+from .entity import IseoPassiveEntity, passage_mode_active
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,11 +52,13 @@ async def async_setup_entry(
     admin_uuid_hex = entry.data.get(CONF_ADMIN_UUID, "")
 
     def _get_entities() -> list[IseoUserSwitch]:
+        if coordinator is None:
+            return []
         return [
             IseoUserSwitch(entry, user) for user in coordinator.data if not _is_ha_internal_user(user, admin_uuid_hex)
         ]
 
-    async_add_entities(_get_entities())
+    async_add_entities([IseoPassageModeSwitch(entry), *_get_entities()])
 
 
 class IseoUserSwitch(CoordinatorEntity, SwitchEntity):
@@ -185,3 +188,34 @@ class IseoUserSwitch(CoordinatorEntity, SwitchEntity):
         except Exception as err:
             _LOGGER.error("Failed to set user disabled state: %s", err)
             raise
+
+
+class IseoPassageModeSwitch(IseoPassiveEntity, SwitchEntity):
+    """Passage mode — the lock holds the latch open until the mode is turned off.
+
+    State comes from the passive advertisements like the other passive entities;
+    only turning it on or off costs a BLE connection.
+    """
+
+    _attr_translation_key = "passage_mode"
+
+    def __init__(self, entry: IseoConfigEntry) -> None:
+        """Initialize the passage mode switch."""
+        super().__init__(entry)
+        self._attr_unique_id = f"{entry.unique_id}_passage_mode"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return whether passage mode is active per the latest advertisement."""
+        state = self._state
+        if state is None:
+            return None
+        return passage_mode_active(state)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Hold the latch open."""
+        await async_set_passage_mode(self.hass, self._entry, enabled=True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Release the latch."""
+        await async_set_passage_mode(self.hass, self._entry, enabled=False)

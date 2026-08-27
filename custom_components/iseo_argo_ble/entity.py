@@ -14,6 +14,13 @@ from .client import LockState
 from .const import CONF_ADDRESS, DOMAIN, signal_update
 
 
+def passage_mode_active(state: LockState) -> bool | None:
+    """Return whether the lock is holding the latch open in passage mode."""
+    if state.passage_mode_normal is None and state.passage_mode_light is None:
+        return None
+    return bool(state.passage_mode_normal) or bool(state.passage_mode_light)
+
+
 class IseoPassiveEntity(Entity):
     """Base for entities driven entirely by the lock's passive BLE state.
 

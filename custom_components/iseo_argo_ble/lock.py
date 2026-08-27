@@ -23,7 +23,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 
-from . import IseoConfigEntry, get_ble_device
+from . import IseoConfigEntry, async_set_passage_mode, get_ble_device
 from .client import (
     BATTERY_LEVEL_LABELS,
     IseoAuthError,
@@ -43,6 +43,7 @@ from .const import (
     EVENT_LOCK_OPENED,
     signal_update,
 )
+from .entity import passage_mode_active
 
 # Trailing debounce (seconds) for the on-open log read: back-to-back
 # open/close events within this window collapse into a single read at the tail.
@@ -575,7 +576,18 @@ class IseoLockEntity(LockEntity):
             pass
 
     async def async_lock(self, **kwargs: Any) -> None:
-        """Lock the door (not supported)."""
+        """Lock the door — only meaningful as an exit from passage mode.
+
+        The latch is momentary and can't be thrown from HA. But while passage
+        mode holds it open the lock reads as unlocked forever, so the UI offers
+        only a Lock button that could never do anything; ending passage mode is
+        what the user is actually asking for, and the latch re-engages.
+        """
+        state = self._entry.runtime_data.latest_state
+        if state is not None and passage_mode_active(state):
+            await async_set_passage_mode(self.hass, self._entry, enabled=False)
+            return
+
         raise HomeAssistantError(
             translation_domain=DOMAIN,
             translation_key="lock_not_supported",

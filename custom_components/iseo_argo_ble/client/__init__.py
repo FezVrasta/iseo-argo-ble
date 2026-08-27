@@ -1,5 +1,9 @@
 from .client import (
     BATTERY_LEVEL_LABELS,
+    OPEN_TYPE_NORMAL,
+    OPEN_TYPE_PASSAGE_OFF,
+    OPEN_TYPE_PASSAGE_ON,
+    OPEN_TYPE_PASSAGE_TOGGLE,
     USER_TYPE_ACCOUNT,
     USER_TYPE_BT,
     USER_TYPE_FINGERPRINT,
@@ -23,6 +27,10 @@ from .log_events import LOG_EVENT_DESCRIPTIONS, describe_event
 
 __all__ = [
     "LOG_EVENT_DESCRIPTIONS",
+    "OPEN_TYPE_NORMAL",
+    "OPEN_TYPE_PASSAGE_OFF",
+    "OPEN_TYPE_PASSAGE_ON",
+    "OPEN_TYPE_PASSAGE_TOGGLE",
     "describe_event",
     "IseoAuthError",
     "IseoClient",

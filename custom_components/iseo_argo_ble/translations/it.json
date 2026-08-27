@@ -123,6 +123,11 @@
       "battery": {
         "name": "Batteria"
       }
+    },
+    "switch": {
+      "passage_mode": {
+        "name": "Modalità passaggio"
+      }
     }
   },
   "exceptions": {
