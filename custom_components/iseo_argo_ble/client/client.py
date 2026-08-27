@@ -940,9 +940,12 @@ class IseoClient:
                     # not fatal — keep waiting for a real one.
                     _LOGGER.debug("Discarding malformed CSL frame: %s", exc)
                     continue
+                if not hdr["crc8_ok"]:
+                    # payload_len comes out of the same header, so slicing on it
+                    # would be reading a length we already know is unreliable.
+                    _LOGGER.warning("Discarding CSL frame with header CRC8 mismatch: %s", raw.hex())
+                    continue
                 break
-        if not hdr["crc8_ok"]:
-            _LOGGER.warning("CSL header CRC8 mismatch")
         pend = _CSL_HEADER_SIZE + hdr["payload_len"]
         enc = raw[_CSL_HEADER_SIZE:pend]
         if enc:

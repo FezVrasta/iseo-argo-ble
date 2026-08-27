@@ -356,3 +356,19 @@ async def test_recv_csl_times_out_on_nothing_but_garbage(identity):
 
     with pytest.raises(TimeoutError):
         await client._recv_csl(timeout=0.05)
+
+
+@pytest.mark.asyncio
+async def test_recv_csl_skips_frames_with_a_bad_header_crc(identity):
+    """A corrupt header means payload_len can't be trusted to slice on."""
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    corrupt = bytearray(_csl_header(_FT_DATA, 1, 0, 2))
+    corrupt[7] ^= 0xFF  # clobber the CRC8
+    client._rxq.put_nowait(bytes(corrupt))
+    client._rxq.put_nowait(_csl_header(_FT_DATA, 9, 0, 3))
+
+    hdr = await client._recv_csl(timeout=1)
+
+    assert hdr["session_id"] == 9
+    assert hdr["crc8_ok"] is True
