@@ -3,6 +3,7 @@ iseo_identity*.json*
 .DS_Store
 iseo_poc.py
 test_decrypt.py
-.claude
+.claude/*
+!.claude/skills/
 __pycache__
 .vscode
