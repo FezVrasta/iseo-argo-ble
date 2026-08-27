@@ -43,6 +43,10 @@ _C2S_UUID = "00000002-0000-1000-8000-00805f9b34fb"  # write   (phone → lock)
 _NOTIFY_PROPS = ("notify", "indicate")
 _WRITE_PROPS = ("write-without-response", "write")
 
+# Every ATT write spends 3 bytes on the opcode and handle.
+_DEFAULT_ATT_MTU = 23
+_ATT_WRITE_HEADER = 3
+
 # ── ISEO advertisement detection ──────────────────────────────────────────────
 # ISEO locks advertise 16-bit service UUIDs that encode device type, system state,
 # and protocol info.  Device-type UUIDs satisfy (short_uuid & 0xFFC0) == 0xF000
@@ -813,6 +817,20 @@ def _pick_char(
     return same_uuid[0] if same_uuid else None
 
 
+def _max_write_size(client: BleakClient) -> int:
+    """Largest payload a single GATT write can carry on this link.
+
+    An unacknowledged write cannot exceed ATT_MTU-3, and BlueZ rejects a longer
+    one outright with "Failed to initiate write" rather than splitting it.
+    """
+    try:
+        mtu = client.mtu_size
+    except Exception:  # noqa: BLE001
+        mtu = None
+    # Backends that haven't negotiated (or can't report) an MTU return None.
+    return max(mtu or _DEFAULT_ATT_MTU, _DEFAULT_ATT_MTU) - _ATT_WRITE_HEADER
+
+
 def _describe_gatt(client: BleakClient) -> str:
     """Render the connected device's GATT layout for debug logs."""
     lines = []
@@ -886,7 +904,12 @@ class IseoClient:
     async def _send_raw(self, client: BleakClient, data: bytes) -> None:
         framed = _slip_encode(data)
         _LOGGER.debug("→ BLE [%dB] %s", len(framed), framed.hex())
-        await client.write_gatt_char(self._c2s_char, framed, response=self._c2s_response)
+        # SLIP is a byte stream, so a frame too large for one write goes out in
+        # several and the lock reassembles it on the END byte. The handshake
+        # alone is 131 bytes — over four writes on a link stuck at MTU 23.
+        size = _max_write_size(client)
+        for start in range(0, len(framed), size):
+            await client.write_gatt_char(self._c2s_char, framed[start : start + size], response=self._c2s_response)
 
     async def _send_csl(self, client: BleakClient, ft: int, raw: bytes) -> None:
         frame = _encode_csl(ft, self._sid, self._ta, raw, self._pl_key, self._sig_key)
@@ -982,7 +1005,12 @@ class IseoClient:
         self._c2s_response = False
         try:
             if _LOGGER.isEnabledFor(logging.DEBUG):
-                _LOGGER.debug("GATT layout of %s:\n%s", self._address, _describe_gatt(client))
+                _LOGGER.debug(
+                    "GATT layout of %s (max write %dB):\n%s",
+                    self._address,
+                    _max_write_size(client),
+                    _describe_gatt(client),
+                )
 
             service_uuid = BLE_SERVICE_UUID.lower()
             services = [s for s in client.services if s.uuid.lower() == service_uuid]

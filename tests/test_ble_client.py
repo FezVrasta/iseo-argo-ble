@@ -17,6 +17,7 @@ from iseo_argo_ble.client import (
     _SBT_STATUS_OK,
     BLE_SERVICE_UUID,
     IseoClient,
+    _slip_encode,
 )
 
 _OTHER_SERVICE_UUID = "00001801-0000-1000-8000-00805f9b34fb"
@@ -221,6 +222,7 @@ async def test_send_raw_matches_the_resolved_write_mode(identity):
     c2s = make_char(_C2S_UUID, ["write"])
     services = [make_service(BLE_SERVICE_UUID, [make_char(_S2C_UUID, ["notify"]), c2s])]
     mock_bleak = make_bleak(services)
+    mock_bleak.mtu_size = 517
     mock_bleak.write_gatt_char = AsyncMock()
 
     client._resolve_io_characteristics(mock_bleak)
@@ -229,3 +231,76 @@ async def test_send_raw_matches_the_resolved_write_mode(identity):
     _args, kwargs = mock_bleak.write_gatt_char.call_args
     assert mock_bleak.write_gatt_char.call_args[0][0] is c2s
     assert kwargs["response"] is True
+
+
+def make_writable_bleak(mtu):
+    """Mock a connected client whose ISEO service exposes the default SLIP pair."""
+    services = [
+        make_service(
+            BLE_SERVICE_UUID,
+            [
+                make_char(_S2C_UUID, ["notify"]),
+                make_char(_C2S_UUID, ["write-without-response"]),
+            ],
+        )
+    ]
+    mock_bleak = make_bleak(services)
+    mock_bleak.mtu_size = mtu
+    mock_bleak.write_gatt_char = AsyncMock()
+    return mock_bleak
+
+
+@pytest.mark.asyncio
+async def test_send_raw_splits_frames_over_the_link_size(identity):
+    """Regression: BlueZ rejects an unacknowledged write longer than MTU-3."""
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    mock_bleak = make_writable_bleak(23)
+    client._resolve_io_characteristics(mock_bleak)
+
+    await client._send_raw(mock_bleak, b"\x01" * 100)
+
+    sent = [call.args[1] for call in mock_bleak.write_gatt_char.call_args_list]
+    assert all(len(chunk) <= 20 for chunk in sent)
+    assert len(sent) > 1
+
+
+@pytest.mark.asyncio
+async def test_send_raw_uses_one_write_when_the_mtu_allows(identity):
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    mock_bleak = make_writable_bleak(517)
+    client._resolve_io_characteristics(mock_bleak)
+
+    await client._send_raw(mock_bleak, b"\x01" * 100)
+
+    mock_bleak.write_gatt_char.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_raw_reassembles_to_the_original_frame(identity):
+    """The chunks the lock receives must concatenate back into one SLIP frame."""
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    mock_bleak = make_writable_bleak(23)
+    client._resolve_io_characteristics(mock_bleak)
+    payload = bytes(range(200, 256)) * 3
+
+    await client._send_raw(mock_bleak, payload)
+
+    sent = b"".join(call.args[1] for call in mock_bleak.write_gatt_char.call_args_list)
+    assert sent == _slip_encode(payload)
+
+
+@pytest.mark.asyncio
+async def test_send_raw_falls_back_when_the_mtu_is_unknown(identity):
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    mock_bleak = make_writable_bleak(None)
+    type(mock_bleak).mtu_size = property(lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+    client._resolve_io_characteristics(mock_bleak)
+
+    await client._send_raw(mock_bleak, b"\x01" * 100)
+
+    sent = [call.args[1] for call in mock_bleak.write_gatt_char.call_args_list]
+    assert all(len(chunk) <= 20 for chunk in sent)
