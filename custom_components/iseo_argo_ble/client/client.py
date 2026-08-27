@@ -975,6 +975,21 @@ class IseoClient:
         self._ta = max(self._ta, hdr["ta_num"] + 1)
         return hdr
 
+    async def _await_election_frame(self) -> None:
+        """Consume the unsolicited CSL frame the lock may send after the handshake.
+
+        Locks that never send one pay the full timeout here on every single
+        operation. The debug line says which of the two a given lock is, and
+        how much of an operation's latency this accounts for.
+        """
+        start = time.monotonic()
+        try:
+            await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
+        except asyncio.TimeoutError:
+            _LOGGER.debug("No election frame (waited %.2fs)", time.monotonic() - start)
+            return
+        _LOGGER.debug("Election frame consumed after %.2fs", time.monotonic() - start)
+
     async def _send_sbt(self, client: BleakClient, opcode: int, payload: bytes = b"") -> None:
         _LOGGER.debug("→ SBT op=%d payload=%s", opcode, payload.hex())
         await self._send_csl(client, _FT_DATA, _build_sbt(opcode, payload))
@@ -1002,11 +1017,15 @@ class IseoClient:
         Falls back to a plain BleakClient(address) for CLI / standalone use.
         """
         if self._ble_device is not None and _bleak_establish_connection is not None:
+            start = time.monotonic()
             client = await _bleak_establish_connection(BleakClient, self._ble_device, self._address)
+            connected = time.monotonic()
+            _LOGGER.debug("Connected to %s in %.2fs", self._address, connected - start)
             try:
                 self._resolve_io_characteristics(client)
                 yield client
             finally:
+                _LOGGER.debug("Session with %s lasted %.2fs", self._address, time.monotonic() - connected)
                 await client.disconnect()
         else:
             if self._ble_device is None and _bleak_establish_connection is not None:
@@ -1102,6 +1121,7 @@ class IseoClient:
             self._rxq.get_nowait()
         self._sig_key = _BASE_SIG_KEY
 
+        start = time.monotonic()
         priv = self._identity_priv
         local_pub = _pub_to_bytes(priv)
         local_rnd = os.urandom(8)
@@ -1152,7 +1172,7 @@ class IseoClient:
             raise IseoConnectionError("Handshake mutual-auth failed (key block mismatch)")
 
         self._pl_key, self._sig_key = _derive_data_keys(kb0, kb2, shs_pl, shs_sig)
-        _LOGGER.debug("Handshake complete — session %d", self._sid)
+        _LOGGER.debug("Handshake complete in %.2fs — session %d", time.monotonic() - start, self._sid)
 
     async def _exchange_info(self, client: BleakClient) -> None:
         """Announce FL_9 feature level to the lock (exchangeInfo)."""
@@ -1182,10 +1202,7 @@ class IseoClient:
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("Handshake timed out") from exc
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             pub_key = _pub_to_bytes(self._identity_priv)
 
@@ -1233,10 +1250,7 @@ class IseoClient:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             # Tag 64 (0x40): Custom Description (the remote user name)
             desc_bytes = remote_user_name.encode("utf-8")
@@ -1275,10 +1289,7 @@ class IseoClient:
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("Handshake timed out") from exc
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             await self._send_sbt(client, _OP_TLV_INFO)
 
@@ -1354,10 +1365,7 @@ class IseoClient:
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("Handshake timed out") from exc
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             await self._exchange_info(client)
 
@@ -1435,10 +1443,7 @@ class IseoClient:
             except asyncio.TimeoutError as exc:
                 raise IseoConnectionError("Handshake timed out") from exc
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             await self._exchange_info(client)
 
@@ -1658,10 +1663,7 @@ class IseoClient:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             await self._exchange_info(client)
 
@@ -1711,10 +1713,7 @@ class IseoClient:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             await self._exchange_info(client)
 
@@ -1753,10 +1752,7 @@ class IseoClient:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             await self._exchange_info(client)
 
@@ -1795,10 +1791,7 @@ class IseoClient:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             await self._exchange_info(client)
 
@@ -1865,10 +1858,7 @@ class IseoClient:
         async with self._connected_client(connect_timeout) as client:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
             await self._exchange_info(client)
 
             if not skip_login:
@@ -1966,10 +1956,7 @@ class IseoClient:
         async with self._connected_client(connect_timeout) as client:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
             await self._exchange_info(client)
 
             if not skip_login:
@@ -2062,10 +2049,7 @@ class IseoClient:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             await self._exchange_info(client)
 
@@ -2169,10 +2153,7 @@ class IseoClient:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             await self._exchange_info(client)
 
@@ -2234,10 +2215,7 @@ class IseoClient:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             await self._exchange_info(client)
 
@@ -2304,10 +2282,7 @@ class IseoClient:
             await client.start_notify(self._s2c_char, self._on_notify)
             await self._handshake(client)
 
-            try:
-                await self._recv_csl(timeout=_TIMEOUT_CSL_ELECTION)
-            except asyncio.TimeoutError:
-                pass
+            await self._await_election_frame()
 
             await self._exchange_info(client)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
@@ -184,10 +185,30 @@ class IseoUserSwitch(CoordinatorEntity, SwitchEntity):
                     user_type=self._user_type,
                     disabled=disabled,
                 )
-            await self.coordinator.async_request_refresh()
+            self._patch_cached_user(disabled)
         except Exception as err:
             _LOGGER.error("Failed to set user disabled state: %s", err)
             raise
+
+    def _patch_cached_user(self, disabled: bool) -> None:
+        """Apply the new state to the cached user list instead of re-reading it.
+
+        Re-reading costs a whole second BLE session — connect, ECDH, master
+        login, then a paginated read of every user — to learn a value we just
+        set ourselves, and the lock is unresponsive for its duration. The write
+        raises on failure, so reaching here means the lock accepted it.
+        """
+        users = self.coordinator.data
+        if not users:
+            return
+        self.coordinator.async_set_updated_data(
+            [
+                replace(user, disabled=disabled)
+                if user.user_type == self._user_type and user.uuid_hex == self._uuid_hex
+                else user
+                for user in users
+            ]
+        )
 
 
 class IseoPassageModeSwitch(IseoPassiveEntity, SwitchEntity):

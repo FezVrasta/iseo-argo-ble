@@ -6,4 +6,5 @@ test_decrypt.py
 .claude/*
 !.claude/skills/
 __pycache__
+.env
 .vscode

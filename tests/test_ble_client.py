@@ -451,3 +451,26 @@ async def test_open_lock_defaults_to_a_plain_open(identity):
         await client.open_lock()
 
     assert _open_payload(client)[48] == b"\x00"
+
+
+@pytest.mark.asyncio
+async def test_await_election_frame_consumes_one_frame(identity):
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    client._rxq.put_nowait(_csl_header(_FT_DATA, 1, 0, 2))
+
+    await client._await_election_frame()
+
+    assert client._rxq.empty()
+
+
+@pytest.mark.asyncio
+async def test_await_election_frame_tolerates_silence(identity, monkeypatch):
+    """Locks that send nothing must not fail the operation — 15 call sites rely on it."""
+    monkeypatch.setattr("iseo_argo_ble.client._TIMEOUT_CSL_ELECTION", 0.05)
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+
+    await client._await_election_frame()
+
+    assert client._rxq.empty()
