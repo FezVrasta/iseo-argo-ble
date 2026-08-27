@@ -58,7 +58,14 @@ try:
         is_iseo_advertisement,
         parse_iseo_advertisement,
     )
-    from iseo_argo_ble.client import BATTERY_LEVEL_LABELS, bcd_encode_pin
+    from iseo_argo_ble.client import (
+        BATTERY_LEVEL_LABELS,
+        OPEN_TYPE_NORMAL,
+        OPEN_TYPE_PASSAGE_OFF,
+        OPEN_TYPE_PASSAGE_ON,
+        OPEN_TYPE_PASSAGE_TOGGLE,
+        bcd_encode_pin,
+    )
 except ImportError:
     # Fallback to local project root if not installed as a package.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -71,7 +78,14 @@ except ImportError:
         is_iseo_advertisement,
         parse_iseo_advertisement,
     )
-    from iseo_argo_ble.client import BATTERY_LEVEL_LABELS, bcd_encode_pin
+    from iseo_argo_ble.client import (
+        BATTERY_LEVEL_LABELS,
+        OPEN_TYPE_NORMAL,
+        OPEN_TYPE_PASSAGE_OFF,
+        OPEN_TYPE_PASSAGE_ON,
+        OPEN_TYPE_PASSAGE_TOGGLE,
+        bcd_encode_pin,
+    )
 
 if TYPE_CHECKING:
     pass
@@ -79,6 +93,27 @@ if TYPE_CHECKING:
 from bleak import BleakScanner
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import ec
+
+_PASSAGE_OPEN_TYPES = {
+    "on": OPEN_TYPE_PASSAGE_ON,
+    "off": OPEN_TYPE_PASSAGE_OFF,
+    "toggle": OPEN_TYPE_PASSAGE_TOGGLE,
+}
+
+
+def _open_type(args: argparse.Namespace) -> int:
+    """Map --passage to an open type; a plain open when it wasn't given."""
+    return _PASSAGE_OPEN_TYPES.get(args.passage, OPEN_TYPE_NORMAL)
+
+
+def _add_passage_argument(parser: argparse.ArgumentParser) -> None:
+    """Add --passage; the lock applies the change as part of the open."""
+    parser.add_argument(
+        "--passage",
+        choices=sorted(_PASSAGE_OPEN_TYPES),
+        help="Also change passage mode (the lock holds the latch open)",
+    )
+
 
 _DEFAULT_IDENTITY = Path(__file__).resolve().parent / "iseo_identity.json"
 _LOGGER = logging.getLogger(__name__)
@@ -232,9 +267,10 @@ async def cmd_open(args: argparse.Namespace) -> None:
         identity_priv=priv,
         subtype=args.subtype,
     )
-    print(f"Connecting to {address} …")
+    open_type = _open_type(args)
+    print(f"Connecting to {address} (open_type={open_type}) …")
     try:
-        await client.open_lock(connect_timeout=args.timeout)
+        await client.open_lock(open_type=open_type, connect_timeout=args.timeout)
     except IseoAuthError as exc:
         sys.exit(f"Auth failed: {exc}\nMake sure the UUID is registered in the Argo app with the correct subtype.")
     except IseoConnectionError as exc:
@@ -253,9 +289,14 @@ async def cmd_gw_open(args: argparse.Namespace) -> None:
         identity_priv=priv,
         subtype=UserSubType.BT_GATEWAY,
     )
-    print(f"Connecting to {address} as Gateway …")
+    open_type = _open_type(args)
+    print(f"Connecting to {address} as Gateway (open_type={open_type}) …")
     try:
-        await client.gw_open(remote_user_name=args.user, connect_timeout=args.timeout)
+        await client.gw_open(
+            remote_user_name=args.user,
+            open_type=open_type,
+            connect_timeout=args.timeout,
+        )
     except IseoAuthError as exc:
         sys.exit(f"Auth failed: {exc}\nMake sure the UUID is registered as an ARGO GATEWAY in the app.")
     except Exception as exc:
@@ -869,9 +910,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_open = sub.add_parser("open", help="Open the lock")
     p_open.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
+    _add_passage_argument(p_open)
 
     p_gw_open = sub.add_parser("gw-open", help="Open the lock (Gateway mode)")
     p_gw_open.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
+    _add_passage_argument(p_gw_open)
     p_gw_open.add_argument(
         "--user",
         metavar="NAME",

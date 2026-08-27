@@ -10,9 +10,11 @@ from typing import Any
 from cryptography.hazmat.primitives.asymmetric.ec import SECP224R1, derive_private_key
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .client import (
@@ -111,6 +113,19 @@ async def async_set_passage_mode(hass: HomeAssistant, entry: IseoConfigEntry, *,
         ) from exc
 
 
+def _remove_legacy_passage_binary_sensor(hass: HomeAssistant, entry: IseoConfigEntry) -> None:
+    """Drop the passage mode binary sensor superseded by the switch in 0.9.0.
+
+    Without this the old entity lingers in the registry as unavailable, and the
+    switch has to take a `_2` suffix on its entity id.
+    """
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id(Platform.BINARY_SENSOR, DOMAIN, f"{entry.unique_id}_passage_mode")
+    if entity_id:
+        _LOGGER.debug("Removing legacy passage mode binary sensor %s", entity_id)
+        registry.async_remove(entity_id)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool:
     """Set up ISEO Argo BLE Lock from a config entry."""
     address = entry.data[CONF_ADDRESS]
@@ -184,6 +199,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: IseoConfigEntry) -> bool
 
     if user_coordinator is not None:
         await user_coordinator.async_config_entry_first_refresh()
+
+    _remove_legacy_passage_binary_sensor(hass, entry)
 
     # Every platform loads regardless of user management: the switch platform
     # also carries the passage mode switch, which only needs the gateway client.

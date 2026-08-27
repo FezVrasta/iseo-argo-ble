@@ -16,7 +16,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import IseoConfigEntry
 from .client import LockState
-from .entity import IseoPassiveEntity, passage_mode_active
+from .entity import IseoPassiveEntity
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -45,12 +45,6 @@ BINARY_SENSORS: tuple[IseoBinarySensorDescription, ...] = (
         translation_key="privacy_mode",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda s: s.privacy_mode,
-    ),
-    IseoBinarySensorDescription(
-        key="passage_mode",
-        translation_key="passage_mode",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=passage_mode_active,
     ),
     IseoBinarySensorDescription(
         key="vip_mode",
