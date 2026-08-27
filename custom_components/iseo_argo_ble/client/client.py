@@ -212,6 +212,7 @@ _KDF_CONTEXT = bytes(a ^ b for a, b in zip(_CTX, _CM, strict=True))
 _SBT_PREAMBLE = 42602  # 0xA66A
 _ADDR_LOCK, _ADDR_APP = 1, 2
 _CSL_VERSION = 2
+_CSL_HEADER_SIZE = 8  # flags + sid + payload_len + ta + crc8
 _BLOCK = 16
 _ZERO_IV = bytes(16)
 
@@ -718,6 +719,8 @@ def _csl_header(ft: int, sid: int, pay_len: int, ta: int) -> bytes:
 
 
 def _parse_csl_header(raw: bytes) -> dict:
+    if len(raw) < _CSL_HEADER_SIZE:
+        raise ValueError(f"CSL header too short ({len(raw)}B)")
     flags = raw[0]
     sid, plen, ta = struct.unpack_from(">HHH", raw, 1)
     return {
@@ -817,12 +820,21 @@ def _pick_char(
     return same_uuid[0] if same_uuid else None
 
 
-def _max_write_size(client: BleakClient) -> int:
+def _max_write_size(client: BleakClient, char: BleakGATTCharacteristic | str) -> int:
     """Largest payload a single GATT write can carry on this link.
 
     An unacknowledged write cannot exceed ATT_MTU-3, and BlueZ rejects a longer
     one outright with "Failed to initiate write" rather than splitting it.
+
+    Ask the characteristic rather than the client: BleakClient.mtu_size reports
+    a hardcoded 23 on BlueZ (and warns) because bleak never acquires the real
+    MTU on connect, which would cap every write at 20 bytes however wide the
+    link actually negotiated.
     """
+    if not isinstance(char, str):
+        size = getattr(char, "max_write_without_response_size", None)
+        if isinstance(size, int) and size > 0:
+            return size
     try:
         mtu = client.mtu_size
     except Exception:  # noqa: BLE001
@@ -907,7 +919,7 @@ class IseoClient:
         # SLIP is a byte stream, so a frame too large for one write goes out in
         # several and the lock reassembles it on the END byte. The handshake
         # alone is 131 bytes — over four writes on a link stuck at MTU 23.
-        size = _max_write_size(client)
+        size = _max_write_size(client, self._c2s_char)
         for start in range(0, len(framed), size):
             await client.write_gatt_char(self._c2s_char, framed[start : start + size], response=self._c2s_response)
 
@@ -917,13 +929,22 @@ class IseoClient:
         await self._send_raw(client, frame)
 
     async def _recv_csl(self, timeout: float = 15.0) -> dict[str, Any]:
-        raw = await asyncio.wait_for(self._rxq.get(), timeout=timeout)
-        _LOGGER.debug("← BLE [%dB] %s", len(raw), raw.hex())
-        hdr = _parse_csl_header(raw)
+        async with asyncio.timeout(timeout):
+            while True:
+                raw = await self._rxq.get()
+                _LOGGER.debug("← BLE [%dB] %s", len(raw), raw.hex())
+                try:
+                    hdr = _parse_csl_header(raw)
+                except ValueError as exc:
+                    # A truncated frame (noisy link, proxy-cached leftover) is
+                    # not fatal — keep waiting for a real one.
+                    _LOGGER.debug("Discarding malformed CSL frame: %s", exc)
+                    continue
+                break
         if not hdr["crc8_ok"]:
             _LOGGER.warning("CSL header CRC8 mismatch")
-        pend = 8 + hdr["payload_len"]
-        enc = raw[8:pend]
+        pend = _CSL_HEADER_SIZE + hdr["payload_len"]
+        enc = raw[_CSL_HEADER_SIZE:pend]
         if enc:
             try:
                 hdr["raw_data"] = _csl_payload_dec(enc, self._pl_key)
@@ -1005,12 +1026,7 @@ class IseoClient:
         self._c2s_response = False
         try:
             if _LOGGER.isEnabledFor(logging.DEBUG):
-                _LOGGER.debug(
-                    "GATT layout of %s (max write %dB):\n%s",
-                    self._address,
-                    _max_write_size(client),
-                    _describe_gatt(client),
-                )
+                _LOGGER.debug("GATT layout of %s:\n%s", self._address, _describe_gatt(client))
 
             service_uuid = BLE_SERVICE_UUID.lower()
             services = [s for s in client.services if s.uuid.lower() == service_uuid]
@@ -1042,9 +1058,10 @@ class IseoClient:
             )
             _LOGGER.log(
                 logging.DEBUG if defaults else logging.INFO,
-                "SLIP characteristics: notify=%s write=%s (acknowledged writes: %s)",
+                "SLIP characteristics: notify=%s write=%s (max write %dB, acknowledged writes: %s)",
                 self._s2c_char.uuid,
                 self._c2s_char.uuid,
+                _max_write_size(client, self._c2s_char),
                 self._c2s_response,
             )
         except Exception as exc:  # noqa: BLE001

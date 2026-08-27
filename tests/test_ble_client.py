@@ -12,11 +12,14 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from iseo_argo_ble.client import (
     _C2S_UUID,
+    _FT_DATA,
     _OP_TLV_INFO,
     _S2C_UUID,
     _SBT_STATUS_OK,
     BLE_SERVICE_UUID,
     IseoClient,
+    _csl_header,
+    _parse_csl_header,
     _slip_encode,
 )
 
@@ -304,3 +307,52 @@ async def test_send_raw_falls_back_when_the_mtu_is_unknown(identity):
 
     sent = [call.args[1] for call in mock_bleak.write_gatt_char.call_args_list]
     assert all(len(chunk) <= 20 for chunk in sent)
+
+
+@pytest.mark.asyncio
+async def test_send_raw_trusts_the_characteristic_over_the_client_mtu(identity):
+    """Regression: BleakClient.mtu_size is hardcoded to 23 on BlueZ."""
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    c2s = make_char(_C2S_UUID, ["write-without-response"])
+    c2s.max_write_without_response_size = 182
+    services = [make_service(BLE_SERVICE_UUID, [make_char(_S2C_UUID, ["notify"]), c2s])]
+    mock_bleak = make_bleak(services)
+    mock_bleak.mtu_size = 23
+    mock_bleak.write_gatt_char = AsyncMock()
+
+    client._resolve_io_characteristics(mock_bleak)
+    await client._send_raw(mock_bleak, b"\x01" * 300)
+
+    sent = [call.args[1] for call in mock_bleak.write_gatt_char.call_args_list]
+    assert max(len(chunk) for chunk in sent) == 182
+
+
+def test_parse_csl_header_rejects_a_runt_frame():
+    """Regression: a short frame raised struct.error/IndexError out of _recv_csl."""
+    with pytest.raises(ValueError):
+        _parse_csl_header(b"\x01\x02\x03")
+
+
+@pytest.mark.asyncio
+async def test_recv_csl_skips_malformed_frames(identity):
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    client._rxq.put_nowait(b"\x01\x02\x03")
+    client._rxq.put_nowait(_csl_header(_FT_DATA, 7, 0, 5))
+
+    hdr = await client._recv_csl(timeout=1)
+
+    assert hdr["session_id"] == 7
+    assert hdr["ta_num"] == 5
+    assert hdr["crc8_ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_recv_csl_times_out_on_nothing_but_garbage(identity):
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    client._rxq.put_nowait(b"\x01\x02\x03")
+
+    with pytest.raises(TimeoutError):
+        await client._recv_csl(timeout=0.05)
