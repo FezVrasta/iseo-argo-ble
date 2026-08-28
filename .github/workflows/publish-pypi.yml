@@ -27,7 +27,16 @@ jobs:
         
     - name: Build package
       run: python -m build
-      
+
+    # 0.6.0 through 0.9.1 published wheels containing nothing but metadata,
+    # because the packaged path was a symlink hatchling silently skipped. Fail
+    # the release instead of shipping an empty package again.
+    - name: Verify the wheel is importable
+      run: |
+        python -m venv /tmp/wheelcheck
+        /tmp/wheelcheck/bin/pip install --quiet dist/*.whl
+        /tmp/wheelcheck/bin/python -c "from iseo_argo_ble import IseoClient, parse_iseo_advertisement"
+
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
       # With Trusted Publishing, no password/token is needed here.
