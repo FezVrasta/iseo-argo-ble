@@ -27,11 +27,13 @@ This integration makes Home Assistant behave as a native **ISEO ARGO Gateway**, 
 This integration is **push-based**. Door status, battery level, and lock modes are read from the lock's passive BLE advertisements, so Home Assistant does not connect to the lock on a timer. The lock is only actively connected to on demand: when you open it, and once per physical door-open to read the access log and attribute the event to a user.
 
 > [!WARNING]
-> **Do not re-introduce polling on recent ISEO firmware.** On the latest ISEO firmware, repeatedly connecting to the lock over BLE on a timer triggers a firmware fault. After a few weeks the lock crashes and stops responding entirely — Bluetooth included — and the **only** way to recover it is a full power cycle by **removing and reinserting the batteries**.
+> **Do not run admin operations on a timer on recent ISEO firmware.** Repeating an admin-authenticated operation on a schedule — in testing, a background sync of the lock's user list every **10 minutes** — eventually triggers a firmware fault. After a few weeks the lock crashes and stops responding entirely, Bluetooth included, and the **only** way to recover it is a full power cycle by **removing and reinserting the batteries**.
 >
-> This is **not** specific to aggressive intervals: in testing, even a **10-minute** periodic connection (a background sync of the lock's user list) was enough to eventually crash the lock. An earlier 30-second door-state poll almost certainly failed faster, but the interval is not the point — **any** repeated timed connection is unsafe. For this reason the integration now does **no periodic polling of any kind**: state comes from passive advertisements, the user list is read once at setup and only on demand (a user toggle or the options "refresh users" step), and the access log is read only when a door-open is detected.
+> The interval was not the problem, and neither is connecting as such. Reading the door state does not use admin commands and is safe to repeat. For this reason the user list is read once at setup and then only on demand (a user toggle, or the options "refresh users" step), and the access log is read only when a door-open is detected.
 
-The crash was observed on the following firmware (ISEO X1R Smart). If your lock reports these versions or newer, keep polling disabled:
+Door state is read from advertisements regardless, because that reports changes as they happen instead of once per poll interval and costs the lock nothing.
+
+The crash was observed on the following firmware (ISEO X1R Smart):
 
 | Component | Hardware version | Software version |
 | --- | --- | --- |
@@ -94,7 +96,7 @@ Once configured, you can use the **Configure** button on the integration page to
 - Ensure you click **Submit** in Home Assistant **before** scanning the card. The lock must be expecting the command when the card is scanned.
 
 **Lock has become completely unresponsive (no Bluetooth, no app, no HA)**
-- On recent ISEO firmware this is the polling-induced firmware crash described above, typically after a few weeks of continuous polling by older versions of this integration. Recover it with a full power cycle: **remove the batteries, wait a few seconds, then reinsert them.** Update to the latest version of this integration (which no longer polls) to prevent it recurring.
+- On recent ISEO firmware this is the firmware fault described above, seen after weeks of an older version of this integration syncing the user list on a timer. Recover it with a full power cycle: **remove the batteries, wait a few seconds, then reinsert them.** Update to the latest version, which only reads the user list at setup and on demand, to prevent it recurring.
 
 ## 📄 License
 

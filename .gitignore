@@ -8,3 +8,4 @@ test_decrypt.py
 __pycache__
 .env
 .vscode
+dist/
