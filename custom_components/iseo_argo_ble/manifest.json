@@ -1,7 +1,7 @@
 {
   "domain": "iseo_argo_ble",
   "name": "ISEO Argo BLE Lock",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "bluetooth": [
     { "service_uuid": "0000f000-0000-1000-8000-00805f9b34fb" },
     { "service_uuid": "0000f001-0000-1000-8000-00805f9b34fb" },
