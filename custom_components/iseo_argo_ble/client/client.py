@@ -480,7 +480,10 @@ def _slip_decode(data: bytes) -> bytes:
 
 
 # Receive timeouts (seconds)
-_TIMEOUT_CSL_ELECTION = 2  # brief wait for unsolicited CSL frame after connect
+# Only long enough to pick up a frame the lock has already queued. Waiting
+# longer costs it on every operation: locks that never send one paid 2s an
+# operation, roughly a quarter of an unlock, for nothing.
+_TIMEOUT_CSL_ELECTION = 0.05
 _TIMEOUT_HANDSHAKE = 15  # CSL handshake round-trips (includes crypto)
 _TIMEOUT_OP = 10  # standard SBT command/response
 _TIMEOUT_SLOW_OP = 30  # paginated reads (user blocks, log pages)
