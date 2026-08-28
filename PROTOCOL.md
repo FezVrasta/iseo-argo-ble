@@ -70,7 +70,7 @@ The UUID at **Offset 3** (typically starting with `0xE`) is a bit-packed 16-bit 
 | Bit | Name | Meaning |
 |-----|------|---------|
 | 15–12 | **Prefix** | Always `0xE` (`1110`). Used to identify the state field. |
-| 11 | **Door Status** | `1` = Closed, `0` = Open (if sensor is present). |
+| 11 | **Door Status** | `1` = Closed, `0` = Open. |
 | 10 | **Aux Battery** | `1` = Auxiliary battery is low. |
 | 9 | **Invitation** | `1` = Invitation is pending/active. |
 | 8 | **Passage (L)** | `1` = Passage mode (Light) is active. |

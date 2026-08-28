@@ -83,7 +83,7 @@ Once configured, you can use the **Configure** button on the integration page to
 - **Domain**: `lock`
 - **State**: `locked` / `unlocked`
 - **Attributes**:
-  - `door_state`: Open/closed status (requires hardware sensor)
+  - `door_state`: Open/closed status
   - `battery_level`: Battery percentage
   - `last_event`: The last recorded action (e.g., "Opened by Marco")
 
