@@ -21,6 +21,7 @@ from typing import Any
 
 from bleak import BleakClient
 from bleak.backends.characteristic import BleakGATTCharacteristic
+from bleak.exc import BleakError
 
 try:
     from bleak_retry_connector import establish_connection as _bleak_establish_connection
@@ -1018,7 +1019,13 @@ class IseoClient:
         """
         if self._ble_device is not None and _bleak_establish_connection is not None:
             start = time.monotonic()
-            client = await _bleak_establish_connection(BleakClient, self._ble_device, self._address)
+            try:
+                client = await _bleak_establish_connection(BleakClient, self._ble_device, self._address)
+            except BleakError as exc:
+                # bleak and bleak-retry-connector raise their own errors here —
+                # out of connection slots, no scanner in range, adapter refusing
+                # the link. Callers should only ever have to know about ours.
+                raise IseoConnectionError(f"{self._address}: {exc}") from exc
             connected = time.monotonic()
             _LOGGER.debug("Connected to %s in %.2fs", self._address, connected - start)
             try:
@@ -1041,9 +1048,12 @@ class IseoClient:
                     "using address-only BleakClient (less reliable).",
                     self._address,
                 )
-            async with BleakClient(self._address, timeout=timeout) as client:
-                self._resolve_io_characteristics(client)
-                yield client
+            try:
+                async with BleakClient(self._address, timeout=timeout) as client:
+                    self._resolve_io_characteristics(client)
+                    yield client
+            except BleakError as exc:
+                raise IseoConnectionError(f"{self._address}: {exc}") from exc
 
     def _resolve_io_characteristics(self, client: BleakClient) -> None:
         """Resolve the SLIP notify (S2C) and write (C2S) characteristics.

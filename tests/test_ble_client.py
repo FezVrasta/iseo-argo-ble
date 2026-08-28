@@ -21,6 +21,7 @@ from iseo_argo_ble.client import (
     OPEN_TYPE_PASSAGE_OFF,
     OPEN_TYPE_PASSAGE_ON,
     IseoClient,
+    IseoConnectionError,
     UserSubType,
     _csl_header,
     _parse_csl_header,
@@ -474,3 +475,22 @@ async def test_await_election_frame_tolerates_silence(identity, monkeypatch):
     await client._await_election_frame()
 
     assert client._rxq.empty()
+
+
+@pytest.mark.asyncio
+async def test_connect_errors_surface_as_iseo_errors(identity):
+    """Regression: bleak's own errors escaped and callers could not catch them."""
+    from bleak.exc import BleakError
+
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv, ble_device=MagicMock())
+
+    with (
+        patch(
+            "iseo_argo_ble.client._bleak_establish_connection",
+            AsyncMock(side_effect=BleakError("no backend with a free slot")),
+        ),
+        pytest.raises(IseoConnectionError, match="no backend with a free slot"),
+    ):
+        async with client._connected_client(5.0):
+            pass
