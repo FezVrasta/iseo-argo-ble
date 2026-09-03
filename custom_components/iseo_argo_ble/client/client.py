@@ -2101,8 +2101,7 @@ class IseoClient:
                     # what we have and let the caller report it.
                     if entries:
                         _LOGGER.warning(
-                            "gw_read_unread_logs: no response to page %d, returning "
-                            "the %d entr%s already read",
+                            "gw_read_unread_logs: no response to page %d, returning the %d entr%s already read",
                             pages,
                             len(entries),
                             "y" if len(entries) == 1 else "ies",

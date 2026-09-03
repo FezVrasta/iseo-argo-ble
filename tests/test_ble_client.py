@@ -13,8 +13,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from iseo_argo_ble.client import (
     _C2S_UUID,
-    _LOG_ENTRY_SIZE,
     _FT_DATA,
+    _LOG_ENTRY_SIZE,
     _OP_TLV_INFO,
     _S2C_UUID,
     _SBT_STATUS_OK,
@@ -549,9 +549,7 @@ async def test_gw_read_unread_logs_raises_when_the_first_page_fails(identity):
     client._await_election_frame = AsyncMock()
     client._exchange_info = AsyncMock()
     client._send_sbt = AsyncMock()
-    client._recv_sbt = AsyncMock(
-        side_effect=[{"status": _SBT_STATUS_OK}, asyncio.TimeoutError()]
-    )
+    client._recv_sbt = AsyncMock(side_effect=[{"status": _SBT_STATUS_OK}, asyncio.TimeoutError()])
 
     mock_bleak = MagicMock()
     mock_bleak.start_notify = AsyncMock()
