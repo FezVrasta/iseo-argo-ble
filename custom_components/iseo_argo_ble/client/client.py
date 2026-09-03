@@ -410,6 +410,11 @@ class UserEntry:
     name: str  # Tag 2 description; empty string if the user has no name set
     inner_subtype: int | None = None  # Tag 0 inner subtype (e.g. 16=Smartphone, 17=Gateway)
     disabled: bool = False  # True if tag 16 time profile has an expired validity end
+    # Raw tag 16 time profile as stored on the lock, or None if the user has
+    # none. Disabling overwrites it, so keep a copy to hand back to
+    # set_user_disabled() when re-enabling, or a credential that was only valid
+    # for a weekend comes back valid forever.
+    validity: bytes | None = None
 
 
 @dataclass
@@ -1524,6 +1529,7 @@ class IseoClient:
                             name=name_raw.decode("utf-8", errors="replace").rstrip() if name_raw else "",
                             inner_subtype=inner_subtype,
                             disabled=disabled,
+                            validity=tp_raw or None,
                         )
                     )
 
@@ -1880,7 +1886,18 @@ class IseoClient:
                 else:
                     login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
                     await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                    await self._recv_sbt(timeout=_TIMEOUT_OP)
+                    try:
+                        login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+                    except asyncio.TimeoutError as exc:
+                        raise IseoConnectionError("No response to TLV_LOGIN") from exc
+                    # Without this check a rejected login runs on into an
+                    # unauthorised read, which then looks like the user simply
+                    # not being on the lock.
+                    if login_resp.get("status", 0) != _SBT_STATUS_OK:
+                        raise IseoAuthError(
+                            f"TLV_LOGIN failed with status={login_resp.get('status')} — "
+                            "this identity may not have admin rights on the lock"
+                        )
 
             # Read all users within the same connection to get raw inner TLV bytes.
             users_raw: list[tuple[int, bytes]] = []
@@ -1957,6 +1974,7 @@ class IseoClient:
         connect_timeout: float = 20.0,
         master_password: str | None = None,
         skip_login: bool = False,
+        validity: bytes | None = None,
     ) -> None:
         """
         Enable or disable any enrolled user by patching their time profile (tag 16).
@@ -1964,6 +1982,11 @@ class IseoClient:
         Reads the raw user TLV from the lock, inserts/removes the disabled time profile
         (start == end == local midnight today), and writes it back via opcode 38.
         Works for any user type (PIN, BT, RFID, etc.).
+
+        Disabling overwrites the user's time profile, so a credential that was
+        only valid for a weekend has nothing to come back to. Pass the profile
+        read before it was disabled as `validity` to restore it; without it,
+        enabling clears every time restriction the credential had.
         """
         _LOGGER.debug("set_user_disabled(%s, type=%d, disabled=%s)", uuid_hex, user_type, disabled)
         async with self._connected_client(connect_timeout) as client:
@@ -1978,7 +2001,18 @@ class IseoClient:
                 else:
                     login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
                     await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                    await self._recv_sbt(timeout=_TIMEOUT_OP)
+                    try:
+                        login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+                    except asyncio.TimeoutError as exc:
+                        raise IseoConnectionError("No response to TLV_LOGIN") from exc
+                    # Without this check a rejected login runs on into an
+                    # unauthorised read, which then looks like the user simply
+                    # not being on the lock.
+                    if login_resp.get("status", 0) != _SBT_STATUS_OK:
+                        raise IseoAuthError(
+                            f"TLV_LOGIN failed with status={login_resp.get('status')} — "
+                            "this identity may not have admin rights on the lock"
+                        )
 
             # Read all users within the same connection to get raw inner TLV bytes.
             users_raw: list[tuple[int, bytes]] = []
@@ -2026,6 +2060,9 @@ class IseoClient:
                     datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
                 )
                 tags[16] = bytes([0x01]) + struct.pack(">II", today_local_midnight, today_local_midnight) + bytes(10)
+            elif validity is not None:
+                # Put back the profile the credential had before it was disabled.
+                tags[16] = validity
             else:
                 # Use SDK SbtTpValidityRange.DISABLED (enabled=false, start=MIN=0, end=MIN=0).
                 # enabled=false means "no time restriction" to the lock firmware.

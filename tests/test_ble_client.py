@@ -22,6 +22,7 @@ from iseo_argo_ble.client import (
     OPEN_TYPE_NORMAL,
     OPEN_TYPE_PASSAGE_OFF,
     OPEN_TYPE_PASSAGE_ON,
+    IseoAuthError,
     IseoClient,
     IseoConnectionError,
     UserSubType,
@@ -29,6 +30,7 @@ from iseo_argo_ble.client import (
     _parse_csl_header,
     _parse_tlv,
     _slip_encode,
+    _tlv,
 )
 
 _OTHER_SERVICE_UUID = "00001801-0000-1000-8000-00805f9b34fb"
@@ -557,3 +559,62 @@ async def test_gw_read_unread_logs_raises_when_the_first_page_fails(identity):
         mock_conn.return_value.__aenter__.return_value = mock_bleak
         with pytest.raises(IseoConnectionError):
             await client.gw_read_unread_logs()
+
+
+def _user_block(uuid_bytes: bytes, user_type: int, validity: bytes) -> bytes:
+    """Build a READ_USER_BLOCK page holding one user with a time profile."""
+    inner = _tlv(0, bytes([16])) + _tlv(1, uuid_bytes) + _tlv(2, b"Guest") + _tlv(16, validity)
+    return bytes([1]) + struct.pack(">H", 0) + _tlv(user_type, inner)
+
+
+@pytest.mark.asyncio
+async def test_set_user_disabled_rejects_a_failed_admin_login(identity):
+    """A rejected login must not look like the user missing from the lock.
+
+    Without the status check the call ran on into an unauthorised read and
+    raised ValueError, which callers reasonably read as "no such user".
+    """
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    client._handshake = AsyncMock()
+    client._await_election_frame = AsyncMock()
+    client._exchange_info = AsyncMock()
+    client._send_sbt = AsyncMock()
+    client._recv_sbt = AsyncMock(return_value={"status": 5})
+
+    mock_bleak = MagicMock()
+    mock_bleak.start_notify = AsyncMock()
+    with patch.object(IseoClient, "_connected_client") as mock_conn:
+        mock_conn.return_value.__aenter__.return_value = mock_bleak
+        with pytest.raises(IseoAuthError):
+            await client.set_user_disabled(uuid_hex=uuid_bytes.hex(), user_type=17, disabled=True)
+
+
+@pytest.mark.asyncio
+async def test_set_user_disabled_restores_the_given_validity(identity):
+    """Enabling with a validity writes it back rather than clearing every limit."""
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    client._handshake = AsyncMock()
+    client._await_election_frame = AsyncMock()
+    client._exchange_info = AsyncMock()
+    client._send_sbt = AsyncMock()
+
+    # A window that opened and closes later — an invitation, say.
+    original = bytes([0x01]) + struct.pack(">II", 1_700_000_000, 1_900_000_000) + bytes(10)
+    client._recv_sbt = AsyncMock(
+        side_effect=[
+            {"status": _SBT_STATUS_OK},  # TLV_LOGIN
+            {"status": _SBT_STATUS_OK, "payload": _user_block(uuid_bytes, 17, original)},
+            {"status": _SBT_STATUS_OK},  # STORE_USER_BLOCK
+        ]
+    )
+
+    mock_bleak = MagicMock()
+    mock_bleak.start_notify = AsyncMock()
+    with patch.object(IseoClient, "_connected_client") as mock_conn:
+        mock_conn.return_value.__aenter__.return_value = mock_bleak
+        await client.set_user_disabled(uuid_hex=uuid_bytes.hex(), user_type=17, disabled=False, validity=original)
+
+    stored = client._send_sbt.await_args.args[2]
+    assert _tlv(16, original) in stored
