@@ -3,6 +3,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import asyncio
 import struct
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from iseo_argo_ble.client import (
     _C2S_UUID,
+    _LOG_ENTRY_SIZE,
     _FT_DATA,
     _OP_TLV_INFO,
     _S2C_UUID,
@@ -494,3 +496,66 @@ async def test_connect_errors_surface_as_iseo_errors(identity):
     ):
         async with client._connected_client(5.0):
             pass
+
+
+def _log_page(entry_count: int, more_flag: int, first_byte: int) -> bytes:
+    """Build a GET_UNREAD payload holding entry_count distinct entries."""
+    body = b""
+    for i in range(entry_count):
+        entry = bytearray(_LOG_ENTRY_SIZE)
+        entry[0] = 8  # event code: Door Open
+        entry[1] = first_byte + i  # keeps each entry distinct
+        body += bytes(entry)
+    return struct.pack(">HB", entry_count, more_flag) + body
+
+
+@pytest.mark.asyncio
+async def test_gw_read_unread_logs_keeps_pages_read_before_a_failure(identity):
+    """A later page failing must not discard the pages already drained.
+
+    Each request advances the lock's read pointer, so entries from completed
+    pages are gone from the lock whether or not we hand them back.
+    """
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv, subtype=UserSubType.BT_GATEWAY)
+    client._handshake = AsyncMock()
+    client._await_election_frame = AsyncMock()
+    client._exchange_info = AsyncMock()
+    client._send_sbt = AsyncMock()
+
+    client._recv_sbt = AsyncMock(
+        side_effect=[
+            {"status": _SBT_STATUS_OK},  # TLV_LOGIN
+            {"status": _SBT_STATUS_OK, "payload": _log_page(2, 1, 0x10)},
+            asyncio.TimeoutError(),  # the lock stops answering mid-drain
+        ]
+    )
+
+    mock_bleak = MagicMock()
+    mock_bleak.start_notify = AsyncMock()
+    with patch.object(IseoClient, "_connected_client") as mock_conn:
+        mock_conn.return_value.__aenter__.return_value = mock_bleak
+        entries = await client.gw_read_unread_logs()
+
+    assert len(entries) == 2
+
+
+@pytest.mark.asyncio
+async def test_gw_read_unread_logs_raises_when_the_first_page_fails(identity):
+    """Nothing was drained, so the caller should hear about the failure."""
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv, subtype=UserSubType.BT_GATEWAY)
+    client._handshake = AsyncMock()
+    client._await_election_frame = AsyncMock()
+    client._exchange_info = AsyncMock()
+    client._send_sbt = AsyncMock()
+    client._recv_sbt = AsyncMock(
+        side_effect=[{"status": _SBT_STATUS_OK}, asyncio.TimeoutError()]
+    )
+
+    mock_bleak = MagicMock()
+    mock_bleak.start_notify = AsyncMock()
+    with patch.object(IseoClient, "_connected_client") as mock_conn:
+        mock_conn.return_value.__aenter__.return_value = mock_bleak
+        with pytest.raises(IseoConnectionError):
+            await client.gw_read_unread_logs()

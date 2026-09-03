@@ -2095,12 +2095,35 @@ class IseoClient:
                 try:
                     sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
                 except asyncio.TimeoutError as exc:
+                    # Every page already fetched has moved the lock's read
+                    # pointer past it, so raising here would destroy those
+                    # entries: the lock will never offer them again. Hand back
+                    # what we have and let the caller report it.
+                    if entries:
+                        _LOGGER.warning(
+                            "gw_read_unread_logs: no response to page %d, returning "
+                            "the %d entr%s already read",
+                            pages,
+                            len(entries),
+                            "y" if len(entries) == 1 else "ies",
+                        )
+                        break
                     raise IseoConnectionError("No response to GET_UNREAD_LOGS") from exc
 
                 status = sbt.get("status", 0)
                 if status in _LOG_STATUS_EOF:
                     break
                 if status != _SBT_STATUS_OK:
+                    if entries:
+                        _LOGGER.warning(
+                            "gw_read_unread_logs: lock returned status=%s on page %d, "
+                            "returning the %d entr%s already read",
+                            status,
+                            pages,
+                            len(entries),
+                            "y" if len(entries) == 1 else "ies",
+                        )
+                        break
                     raise IseoAuthError(f"Lock returned status={status} for GET_UNREAD_LOGS")
 
                 raw = sbt.get("payload", b"")
