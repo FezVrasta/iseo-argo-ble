@@ -825,17 +825,27 @@ def _parse_sbt(data: bytes) -> dict:
 
 # ── Main client ───────────────────────────────────────────────────────────────
 def _pick_char(
-    chars: list[BleakGATTCharacteristic], default_uuid: str, props: tuple[str, ...]
+    chars: list[BleakGATTCharacteristic],
+    default_uuid: str,
+    props: tuple[str, ...],
+    *,
+    discover: bool = True,
 ) -> BleakGATTCharacteristic | None:
-    """Pick one direction of the SLIP link out of the ISEO service's characteristics.
+    """Pick one direction of the SLIP link out of a service's characteristics.
 
     A lock may expose the default UUID more than once, so prefer the instance
     carrying the properties we need before falling back to discovery by property
     alone. `props` is ordered by preference: for writes, a characteristic taking
     write-without-response beats one that only takes acknowledged writes.
+
+    `discover` is what makes that fallback legal: inside the ISEO service every
+    characteristic belongs to the SLIP link, so an unknown UUID with the right
+    properties is the link. Outside it — see `_resolve_io_characteristics` —
+    only the documented UUIDs can be trusted, or we would happily mistake some
+    unrelated notify characteristic for the lock's.
     """
     same_uuid = [c for c in chars if c.uuid.lower() == default_uuid]
-    candidates = same_uuid or chars
+    candidates = same_uuid if same_uuid or not discover else chars
     for prop in props:
         for char in candidates:
             if prop in char.properties:
@@ -1070,7 +1080,8 @@ class IseoClient:
         ships a default pair (0x0001/0x0002) and an "extra" pair (0x0003/0x0004),
         and some locks use different ones entirely. Prefer the defaults when the
         lock exposes them (unchanged behaviour); otherwise discover the notify
-        and write characteristics from the ISEO service by their properties.
+        and write characteristics from the ISEO service by their properties, and
+        failing that look for the default pair anywhere in the GATT.
 
         Resolved characteristic objects are stored rather than UUIDs: 0x0001 and
         0x0002 are 16-bit aliases that some locks also expose outside the ISEO
@@ -1086,15 +1097,22 @@ class IseoClient:
 
             service_uuid = BLE_SERVICE_UUID.lower()
             services = [s for s in client.services if s.uuid.lower() == service_uuid]
-            if not services:
-                _LOGGER.debug("ISEO service %s not found; using default I/O chars", BLE_SERVICE_UUID)
-                return
+            in_iseo_service = bool(services)
+            if not in_iseo_service:
+                # A lock that doesn't expose the documented ISEO service still
+                # carries the SLIP pair somewhere, so sweep the whole GATT for
+                # the default UUIDs. Resolving them to characteristic objects is
+                # the point: handing bleak the bare UUIDs is what makes it give
+                # up with "Multiple Characteristics with this UUID" on locks
+                # that expose 0x0001 in more than one service.
+                _LOGGER.debug("ISEO service %s not found; searching the whole GATT", BLE_SERVICE_UUID)
+                services = list(client.services)
 
             # Both directions must come from the same service instance to be a
             # working pair — a lock can expose the ISEO service more than once.
             for service in services:
-                notify = _pick_char(service.characteristics, _S2C_UUID, _NOTIFY_PROPS)
-                write = _pick_char(service.characteristics, _C2S_UUID, _WRITE_PROPS)
+                notify = _pick_char(service.characteristics, _S2C_UUID, _NOTIFY_PROPS, discover=in_iseo_service)
+                write = _pick_char(service.characteristics, _C2S_UUID, _WRITE_PROPS, discover=in_iseo_service)
                 if notify is None or write is None:
                     continue
                 self._s2c_char = notify
@@ -1104,7 +1122,14 @@ class IseoClient:
                 self._c2s_response = "write-without-response" not in write.properties
                 break
             else:
-                _LOGGER.debug("No usable notify/write pair in the ISEO service; using defaults")
+                # Nothing left but the bare UUIDs, which bleak may well refuse
+                # to resolve. Log the layout the lock actually exposes so the
+                # failure that follows can be diagnosed from the report alone.
+                _LOGGER.warning(
+                    "%s: no usable notify/write pair found; falling back to the default UUIDs. GATT layout:\n%s",
+                    self._address,
+                    _describe_gatt(client),
+                )
                 return
 
             defaults = (

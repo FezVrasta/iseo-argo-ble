@@ -171,7 +171,41 @@ def test_resolve_io_discovers_when_defaults_absent(identity):
 
 
 def test_resolve_io_keeps_defaults_without_iseo_service(identity):
+    """Half a pair is no pair: a lone notify characteristic resolves nothing."""
     services = [make_service(_OTHER_SERVICE_UUID, [make_char(_S2C_UUID, ["notify"])])]
+
+    assert resolve(identity, services) == (_S2C_UUID, _C2S_UUID)
+
+
+def test_resolve_io_finds_the_default_pair_outside_the_iseo_service(identity):
+    """Regression: issue #3, a duplicate 0x0001 with no ISEO service in sight.
+
+    bleak refuses to resolve a UUID exposed by several characteristics, so the
+    pair has to be found even when the lock hides it under another service.
+    """
+    decoy = make_char(_S2C_UUID, ["notify"])
+    s2c = make_char(_S2C_UUID, ["notify"])
+    c2s = make_char(_C2S_UUID, ["write-without-response"])
+    services = [
+        make_service(_OTHER_SERVICE_UUID, [decoy]),
+        make_service(_OTHER_SERVICE_UUID, [s2c, c2s]),
+    ]
+
+    assert resolve(identity, services) == (s2c, c2s)
+
+
+def test_resolve_io_does_not_guess_outside_the_iseo_service(identity):
+    """Discovery by property alone is only safe inside the ISEO service.
+
+    Every characteristic there belongs to the SLIP link; anywhere else a notify
+    characteristic is just as likely to be a battery level or a heart rate.
+    """
+    services = [
+        make_service(
+            _OTHER_SERVICE_UUID,
+            [make_char(_EXTRA_S2C_UUID, ["notify"]), make_char(_EXTRA_C2S_UUID, ["write"])],
+        )
+    ]
 
     assert resolve(identity, services) == (_S2C_UUID, _C2S_UUID)
 
