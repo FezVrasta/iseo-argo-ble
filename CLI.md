@@ -70,6 +70,33 @@ pipenv run python iseo_cli.py new-identity
 pipenv run python iseo_cli.py --timeout 30 open AA:BB:CC:DD:EE:FF
 ```
 
+### Suspending a User
+
+Suspending works by overwriting the user's time profile with an expired range,
+which means the lock no longer holds the window the credential was valid for.
+Note it down **before** disabling, or re-enabling can only hand the credential
+back with no time restriction at all:
+
+```bash
+# 1. Read the time profile while the user is still enabled
+pipenv run python iseo_cli.py users --raw AA:BB:CC:DD:EE:FF
+
+#    1  Phone   3f2a…  active  Weekend guest
+#       time profile: 016834f0e06838e88000000000000000000000
+
+# 2. Suspend
+pipenv run python iseo_cli.py disable-user --uuid 3f2a… --user-type 17 AA:BB:CC:DD:EE:FF
+
+# 3. Restore, handing the window back
+pipenv run python iseo_cli.py enable-user --uuid 3f2a… --user-type 17 \
+    --validity 016834f0e06838e88000000000000000000000 AA:BB:CC:DD:EE:FF
+```
+
+A user with no time profile to begin with needs no `--validity` — there is
+nothing to put back. The Home Assistant switch does all of this for you: it
+keeps its own copy of the profile in the config entry and passes it back when
+you turn the user on again.
+
 ## CLI Output Examples
 
 ### Scan Output
