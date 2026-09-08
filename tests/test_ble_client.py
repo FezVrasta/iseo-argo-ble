@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from iseo_argo_ble.client import (
     _C2S_UUID,
     _FT_DATA,
+    _FT_SESSION_HANDSHAKE,
     _LOG_ENTRY_SIZE,
     _OP_TLV_INFO,
     _S2C_UUID,
@@ -652,3 +653,95 @@ async def test_set_user_disabled_restores_the_given_validity(identity):
 
     stored = client._send_sbt.await_args.args[2]
     assert _tlv(16, original) in stored
+
+
+def _mock_session(client):
+    """Stub out the connect/handshake preamble and return the fake BleakClient."""
+    client._handshake = AsyncMock()
+    client._await_election_frame = AsyncMock()
+    client._exchange_info = AsyncMock()
+    client._send_sbt = AsyncMock()
+    mock_bleak = MagicMock()
+    mock_bleak.start_notify = AsyncMock()
+    return mock_bleak
+
+
+@pytest.mark.asyncio
+async def test_read_users_raises_when_the_first_block_is_refused(identity):
+    """A refused read must not read back as "this lock has no users".
+
+    Returning [] made a permission failure look like an empty whitelist, which
+    in Home Assistant deletes every user switch the integration created.
+    """
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    mock_bleak = _mock_session(client)
+    client._recv_sbt = AsyncMock(
+        side_effect=[
+            {"status": _SBT_STATUS_OK},  # TLV_LOGIN
+            {"status": 5},  # READ_USER_BLOCK refused
+        ]
+    )
+
+    with patch.object(IseoClient, "_connected_client") as mock_conn:
+        mock_conn.return_value.__aenter__.return_value = mock_bleak
+        with pytest.raises(IseoAuthError):
+            await client.read_users()
+
+
+@pytest.mark.asyncio
+async def test_read_users_keeps_the_pages_it_already_read(identity):
+    """A failure part-way through still yields the users already collected."""
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    mock_bleak = _mock_session(client)
+    first_page = bytes([1]) + struct.pack(">H", 1) + _tlv(17, _tlv(1, uuid_bytes) + _tlv(2, b"Guest"))
+    client._recv_sbt = AsyncMock(
+        side_effect=[
+            {"status": _SBT_STATUS_OK},  # TLV_LOGIN
+            {"status": _SBT_STATUS_OK, "payload": first_page},
+            {"status": 5},  # second page refused
+        ]
+    )
+
+    with patch.object(IseoClient, "_connected_client") as mock_conn:
+        mock_conn.return_value.__aenter__.return_value = mock_bleak
+        users = await client.read_users()
+
+    assert [u.uuid_hex for u in users] == [uuid_bytes.hex()]
+
+
+@pytest.mark.asyncio
+async def test_gw_register_log_notif_rejects_a_failed_login(identity):
+    """The login status was discarded here, unlike at every other login site."""
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv, subtype=UserSubType.BT_GATEWAY)
+    mock_bleak = _mock_session(client)
+    client._register_log_notif_internal = AsyncMock()
+    client._recv_sbt = AsyncMock(return_value={"status": 5})
+
+    with patch.object(IseoClient, "_connected_client") as mock_conn:
+        mock_conn.return_value.__aenter__.return_value = mock_bleak
+        with pytest.raises(IseoAuthError):
+            await client.gw_register_log_notif()
+
+    client._register_log_notif_internal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handshake_rejects_a_truncated_step_one(identity):
+    """A short frame used to raise ValueError out of the curve, which callers miss."""
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv)
+    client._send_csl = AsyncMock()
+    client._recv_csl = AsyncMock(
+        return_value={
+            "frame_type": _FT_SESSION_HANDSHAKE,
+            "session_id": 1,
+            "ta_num": 1,
+            "raw_data": b"\x00" * 40,  # needs 80
+        }
+    )
+
+    with pytest.raises(IseoConnectionError, match="Truncated"):
+        await client._handshake(MagicMock())

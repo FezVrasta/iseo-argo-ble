@@ -6,7 +6,7 @@
       "not_iseo_device": "This device does not appear to be an ISEO lock."
     },
     "error": {
-      "auth_failed": "The lock rejected the request. Make sure the Argo app is closed, then try again \u2014 scan a valid Master Card on the lock (the LED will blink green on success).",
+      "auth_failed": "The lock rejected the request. Make sure the Argo app is closed, then try again — scan a valid Master Card on the lock (the LED will blink green on success).",
       "cannot_connect": "Could not connect to the lock. Check it is powered on and within Bluetooth range.",
       "unknown": "An unexpected error occurred. Check the Home Assistant logs for details.",
       "invalid_admin_identity": "The provided admin identity is invalid."
@@ -185,6 +185,9 @@
     },
     "lock_rejected_identity": {
       "message": "Lock rejected the identity. Ensure the UUID is registered in the Argo app."
+    },
+    "no_admin_identity": {
+      "message": "Managing lock users needs an admin identity. Re-run the integration setup and enrol one with the Master Card."
     }
   }
 }

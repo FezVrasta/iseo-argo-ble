@@ -26,11 +26,9 @@ from homeassistant.helpers.selector import (
 
 from . import IseoData
 from .client import (
-    USER_TYPE_BT,
     IseoAuthError,
     IseoClient,
     IseoConnectionError,
-    UserEntry,
     is_iseo_advertisement,
 )
 from .const import (
@@ -42,6 +40,8 @@ from .const import (
     CONF_UUID,
     DEFAULT_USER_SUBTYPE,
     DOMAIN,
+    is_ha_internal_user,
+    user_key,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -257,15 +257,6 @@ class IseoConfigFlow(ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
         return IseoOptionsFlowHandler()
 
 
-def _is_ha_internal_user(user: UserEntry, admin_uuid_hex: str) -> bool:
-    """Return True for HA-internal lock identities (gateway or admin)."""
-    if user.user_type == USER_TYPE_BT and user.inner_subtype == 17:
-        return True
-    if admin_uuid_hex and user.uuid_hex == admin_uuid_hex:
-        return True
-    return False
-
-
 class IseoOptionsFlowHandler(OptionsFlow):
     """Handle options flow for ISEO Argo BLE Lock."""
 
@@ -303,8 +294,7 @@ class IseoOptionsFlowHandler(OptionsFlow):
             mapping = {}
             for label, value in user_input.items():
                 if value and value != "" and label in user_key_map:
-                    user_key = user_key_map[label]
-                    mapping[user_key] = value
+                    mapping[user_key_map[label]] = value
 
             return self.async_create_entry(title="", data={CONF_USER_MAPPING: mapping})
 
@@ -317,7 +307,7 @@ class IseoOptionsFlowHandler(OptionsFlow):
 
         # Filter out HA-internal users (gateway and admin identities)
         admin_uuid_hex = self.config_entry.data.get(CONF_ADMIN_UUID, "")
-        mappable_users = [u for u in users if not _is_ha_internal_user(u, admin_uuid_hex)]
+        mappable_users = [u for u in users if not is_ha_internal_user(u, admin_uuid_hex)]
 
         # Get existing mapping
         existing_mapping = self.config_entry.options.get(CONF_USER_MAPPING, {})
@@ -336,13 +326,13 @@ class IseoOptionsFlowHandler(OptionsFlow):
         for user in mappable_users:
             user_name = user.name.strip() or f"User {user.uuid_hex[:8]}"
             label = f"{user_name} ({user.uuid_hex[:4]})"
-            user_key = f"{user.user_type}_{user.uuid_hex}"
-            user_key_map[label] = user_key
+            key = user_key(user.user_type, user.uuid_hex)
+            user_key_map[label] = key
 
             schema[
                 vol.Optional(
                     label,
-                    description={"suggested_value": existing_mapping.get(user_key, "")},
+                    description={"suggested_value": existing_mapping.get(key, "")},
                 )
             ] = SelectSelector(SelectSelectorConfig(options=ha_user_options, mode=SelectSelectorMode.DROPDOWN))
 

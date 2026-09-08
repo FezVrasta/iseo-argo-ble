@@ -607,6 +607,22 @@ def bcd_encode_pin(pin: str) -> bytes:
     return bytes(res)
 
 
+def _expired_time_profile() -> bytes:
+    """Build the tag 16 SbtTimeProfile that suspends a user.
+
+    Validity is enabled but the range is empty: the app refuses end dates before
+    today, so start == end == local midnight is the shortest window that has
+    already elapsed. The lock reads these timestamps in local time, hence
+    midnight in the system timezone rather than UTC.
+
+    `datetime.now().astimezone()` reflects the offset in force right now;
+    `time.mktime()` with `tm_isdst=-1` is ambiguous for the hour a DST change
+    repeats, and would put the boundary an hour off twice a year.
+    """
+    local_midnight = int(datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    return bytes([0x01]) + struct.pack(">II", local_midnight, local_midnight) + bytes(10)
+
+
 def _tlv_user_pin(uuid_bytes: bytes, pin: str, name: str | None = None, disabled: bool = False) -> bytes:
     """
     SbtUserDataTlvCodec format for a PIN user (outer tag 18).
@@ -639,15 +655,7 @@ def _tlv_user_pin(uuid_bytes: bytes, pin: str, name: str | None = None, disabled
     inner += _tlv(4, struct.pack(">I", now_ts))
 
     if disabled:
-        # Tag 16: SbtTimeProfile — validity enabled but already expired.
-        # The app won't allow end dates before today, so we use start=today_midnight,
-        # end=today_midnight (zero-length range), which is immediately expired.
-        # Lock interprets timestamps in local time, so compute local midnight as a UTC epoch value.
-        now_local = time.localtime()
-        today_local_midnight = int(
-            time.mktime(time.struct_time((now_local.tm_year, now_local.tm_mon, now_local.tm_mday, 0, 0, 0, 0, 0, -1)))
-        )
-        inner += _tlv(16, bytes([0x01]) + struct.pack(">II", today_local_midnight, today_local_midnight) + bytes(10))
+        inner += _tlv(16, _expired_time_profile())
 
     if pin:
         # Tag 18: SbtUserPassword (BCD PIN).
@@ -1184,6 +1192,13 @@ class IseoClient:
 
         raw = resp["raw_data"]
         KB = 8
+        # Slicing a short frame yields short keys, and the curve then rejects
+        # them with a bare ValueError that callers catching IseoConnectionError
+        # don't see — an unhandled traceback where "cannot connect" belongs.
+        if len(raw) < KB * 2 + 64:
+            raise IseoConnectionError(
+                f"Truncated HANDSHAKE frame (step 1): got {len(raw)} bytes, expected {KB * 2 + 64}"
+            )
         enc_step = raw[: KB * 2]
         srv_pub = raw[KB * 2 : KB * 2 + 56]
         srv_rnd = raw[KB * 2 + 56 : KB * 2 + 64]
@@ -1226,6 +1241,84 @@ class IseoClient:
         except asyncio.TimeoutError as exc:
             raise IseoConnectionError("No response to exchangeInfo") from exc
         _LOGGER.debug("exchangeInfo response: %s", info_resp)
+
+    async def _bt_login(self, client: BleakClient, hint: str = "") -> None:
+        """Authenticate this identity to the lock (TLV_LOGIN).
+
+        Every operation that isn't done in Master Mode opens with this. Skipping
+        the status check is not a shortcut: the commands that follow are then
+        sent unauthorised, and the lock answers them with the same "not found"
+        it gives for a user that was never enrolled — so a rejected login used
+        to surface as a puzzling failure two steps later. `hint` names the most
+        likely cause for the operation at hand.
+        """
+        login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
+        await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
+        try:
+            login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
+        except asyncio.TimeoutError as exc:
+            raise IseoConnectionError("No response to TLV_LOGIN") from exc
+
+        if login_resp.get("status", 0) != _SBT_STATUS_OK:
+            message = f"TLV_LOGIN failed with status={login_resp.get('status')}"
+            raise IseoAuthError(f"{message} — {hint}" if hint else message)
+
+    async def _read_user_blocks(self, client: BleakClient) -> list[tuple[int, bytes]]:
+        """Read the lock's whitelist, one page at a time, as raw (tag, TLV) pairs.
+
+        The lock reports how many entries it returned and how many are left, and
+        the walk ends when either hits zero. A non-OK status is not an ordinary
+        end-of-list marker — it means the read itself was refused — so it only
+        stops the walk once something has been read, and raises when the very
+        first page fails. Returning an empty list there would be indistinguishable
+        from a lock with no users at all, which is how a refused read used to
+        end up deleting every user switch in Home Assistant.
+        """
+        users_raw: list[tuple[int, bytes]] = []
+        fetch_start = 0
+        fetch_max = 0xFFFF
+        first_block = True
+
+        while True:
+            req = struct.pack(">HH", fetch_start, fetch_max)
+            await self._send_sbt(client, _OP_TLV_READ_USER_BLOCK, req)
+            try:
+                sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP if first_block else _TIMEOUT_OP)
+            except asyncio.TimeoutError as exc:
+                raise IseoConnectionError("Timed out reading user block from lock") from exc
+
+            status = sbt.get("status", 0)
+            if status != _SBT_STATUS_OK:
+                if first_block:
+                    raise IseoAuthError(
+                        f"Lock returned status={status} for TLV_READ_USER_BLOCK — "
+                        "this identity may not have admin rights on the lock"
+                    )
+                _LOGGER.warning(
+                    "Lock returned status=%s reading user block at offset %d; returning the %d user(s) already read",
+                    status,
+                    fetch_start,
+                    len(users_raw),
+                )
+                break
+            first_block = False
+
+            raw = sbt.get("payload", b"")
+            if len(raw) < 3:
+                break
+
+            page_count = raw[0]
+            remaining = struct.unpack_from(">H", raw, 1)[0]
+            for outer_tag, inner_bytes in _parse_tlv_list(raw[3:]):
+                if outer_tag in _USER_TYPE_RANGE:
+                    users_raw.append((outer_tag, inner_bytes))
+
+            fetch_start += page_count
+            fetch_max = remaining
+            if remaining == 0 or page_count == 0:
+                break
+
+        return users_raw
 
     # ── Public API ─────────────────────────────────────────────────────────
     async def open_lock(self, open_type: int = OPEN_TYPE_NORMAL, connect_timeout: float = 20.0) -> None:
@@ -1413,15 +1506,7 @@ class IseoClient:
             await self._exchange_info(client)
 
             if not skip_login:
-                login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
-                await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                try:
-                    login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-                except asyncio.TimeoutError as exc:
-                    raise IseoConnectionError("No response to TLV_LOGIN") from exc
-
-                if login_resp.get("status", 0) != _SBT_STATUS_OK:
-                    raise IseoAuthError(f"TLV_LOGIN failed with status={login_resp.get('status')}")
+                await self._bt_login(client)
             else:
                 _LOGGER.debug("Skipping TLV_LOGIN (assume Master Mode/Pre-authorized)")
 
@@ -1491,77 +1576,36 @@ class IseoClient:
             await self._exchange_info(client)
 
             if not skip_login:
-                login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
-                await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                try:
-                    login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-                except asyncio.TimeoutError as exc:
-                    raise IseoConnectionError("No response to TLV_LOGIN") from exc
-
-                if login_resp.get("status", 0) != _SBT_STATUS_OK:
-                    raise IseoAuthError(f"TLV_LOGIN failed with status={login_resp.get('status')}")
+                await self._bt_login(client)
             else:
                 _LOGGER.debug("Skipping TLV_LOGIN (assume Master Mode/Pre-authorized)")
 
-            fetch_start = 0
-            fetch_max = 0xFFFF
-            first_block = True
+            for outer_tag, inner_bytes in await self._read_user_blocks(client):
+                inner = _parse_tlv(inner_bytes)
+                uuid_raw = inner.get(1, b"")
+                name_raw = inner.get(2, b"")
+                subtype_raw = inner.get(0, b"")
+                inner_subtype = subtype_raw[0] if subtype_raw else None
 
-            while True:
-                req = struct.pack(">HH", fetch_start, fetch_max)
-                await self._send_sbt(client, _OP_TLV_READ_USER_BLOCK, req)
+                disabled = False
+                tp_raw = inner.get(16, b"")
+                if len(tp_raw) >= 9:
+                    tp_enabled = (tp_raw[0] & 0x01) != 0
+                    tp_start = struct.unpack_from(">I", tp_raw, 1)[0]
+                    tp_end = struct.unpack_from(">I", tp_raw, 5)[0]
+                    now = int(time.time())
+                    disabled = tp_enabled and tp_start == tp_end and tp_end <= now
 
-                try:
-                    sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP if first_block else _TIMEOUT_OP)
-                    first_block = False
-                except asyncio.TimeoutError as exc:
-                    raise IseoConnectionError("No response to TLV_READ_USER_BLOCK") from exc
-
-                status = sbt.get("status", 0)
-                if status != _SBT_STATUS_OK:
-                    break
-
-                raw = sbt.get("payload", b"")
-                if len(raw) < 3:
-                    break
-
-                page_count = raw[0]
-                remaining = struct.unpack_from(">H", raw, 1)[0]
-                tlv_data = raw[3:]
-
-                for outer_tag, inner_bytes in _parse_tlv_list(tlv_data):
-                    if outer_tag not in _USER_TYPE_RANGE:
-                        continue
-                    inner = _parse_tlv(inner_bytes)
-                    uuid_raw = inner.get(1, b"")
-                    name_raw = inner.get(2, b"")
-                    subtype_raw = inner.get(0, b"")
-                    inner_subtype = subtype_raw[0] if subtype_raw else None
-
-                    disabled = False
-                    tp_raw = inner.get(16, b"")
-                    if len(tp_raw) >= 9:
-                        tp_enabled = (tp_raw[0] & 0x01) != 0
-                        tp_start = struct.unpack_from(">I", tp_raw, 1)[0]
-                        tp_end = struct.unpack_from(">I", tp_raw, 5)[0]
-                        now = int(time.time())
-                        disabled = tp_enabled and tp_start == tp_end and tp_end <= now
-
-                    entries.append(
-                        UserEntry(
-                            user_type=outer_tag,
-                            uuid_hex=uuid_raw.hex(),
-                            name=name_raw.decode("utf-8", errors="replace").rstrip() if name_raw else "",
-                            inner_subtype=inner_subtype,
-                            disabled=disabled,
-                            validity=tp_raw or None,
-                        )
+                entries.append(
+                    UserEntry(
+                        user_type=outer_tag,
+                        uuid_hex=uuid_raw.hex(),
+                        name=name_raw.decode("utf-8", errors="replace").rstrip() if name_raw else "",
+                        inner_subtype=inner_subtype,
+                        disabled=disabled,
+                        validity=tp_raw or None,
                     )
-
-                fetch_start += page_count
-                fetch_max = remaining
-                if remaining == 0 or page_count == 0:
-                    break
+                )
 
         _LOGGER.debug("read_users: fetched %d users", len(entries))
         return entries
@@ -1762,14 +1806,7 @@ class IseoClient:
             await self._exchange_info(client)
 
             if not skip_login:
-                login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
-                await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                try:
-                    login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-                except asyncio.TimeoutError as exc:
-                    raise IseoConnectionError("No response to TLV_LOGIN") from exc
-                if login_resp.get("status", 0) != _SBT_STATUS_OK:
-                    raise IseoAuthError(f"Login failed (status={login_resp.get('status')})")
+                await self._bt_login(client)
 
             await self._register_user_internal(
                 client,
@@ -1845,17 +1882,7 @@ class IseoClient:
                     await self.master_login(client, master_password)
                 else:
                     # Standard admin login
-                    login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
-                    await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                    try:
-                        login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-                    except asyncio.TimeoutError as exc:
-                        raise IseoConnectionError("No response to TLV_LOGIN") from exc
-                    if login_resp.get("status", 0) != _SBT_STATUS_OK:
-                        raise IseoAuthError(
-                            f"TLV_LOGIN failed with status={login_resp.get('status')} — "
-                            "UUID may not be registered on the lock"
-                        )
+                    await self._bt_login(client, "UUID may not be registered on the lock")
             else:
                 _LOGGER.debug("Skipping TLV_LOGIN (assume Master Mode/Pre-authorized)")
 
@@ -1909,52 +1936,13 @@ class IseoClient:
                 if master_password:
                     await self.master_login(client, master_password)
                 else:
-                    login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
-                    await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                    try:
-                        login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-                    except asyncio.TimeoutError as exc:
-                        raise IseoConnectionError("No response to TLV_LOGIN") from exc
-                    # Without this check a rejected login runs on into an
-                    # unauthorised read, which then looks like the user simply
-                    # not being on the lock.
-                    if login_resp.get("status", 0) != _SBT_STATUS_OK:
-                        raise IseoAuthError(
-                            f"TLV_LOGIN failed with status={login_resp.get('status')} — "
-                            "this identity may not have admin rights on the lock"
-                        )
+                    await self._bt_login(client, "this identity may not have admin rights on the lock")
 
             # Read all users within the same connection to get raw inner TLV bytes.
-            users_raw: list[tuple[int, bytes]] = []
-            fetch_start = 0
-            fetch_max = 0xFFFF
-            first_block = True
-
-            while True:
-                req = struct.pack(">HH", fetch_start, fetch_max)
-                await self._send_sbt(client, _OP_TLV_READ_USER_BLOCK, req)
-                try:
-                    sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP if first_block else _TIMEOUT_OP)
-                    first_block = False
-                except asyncio.TimeoutError as exc:
-                    raise IseoConnectionError("Timed out reading user block from lock") from exc
-                if sbt.get("status", 0) != _SBT_STATUS_OK:
-                    break
-                raw = sbt.get("payload", b"")
-                if len(raw) < 3:
-                    break
-                page_count = raw[0]
-                remaining = struct.unpack_from(">H", raw, 1)[0]
-                for outer_tag, inner_bytes in _parse_tlv_list(raw[3:]):
-                    if outer_tag in _USER_TYPE_RANGE:
-                        users_raw.append((outer_tag, inner_bytes))
-                fetch_start += page_count
-                fetch_max = remaining
-                if remaining == 0 or page_count == 0:
-                    break
+            users_raw = await self._read_user_blocks(client)
 
             _LOGGER.debug(
-                "set_user_disabled: found %d users: %s",
+                "set_user_admin: found %d users: %s",
                 len(users_raw),
                 [(ut, _parse_tlv(r).get(1, b"").hex()) for ut, r in users_raw],
             )
@@ -2024,49 +2012,10 @@ class IseoClient:
                 if master_password:
                     await self.master_login(client, master_password)
                 else:
-                    login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
-                    await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                    try:
-                        login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-                    except asyncio.TimeoutError as exc:
-                        raise IseoConnectionError("No response to TLV_LOGIN") from exc
-                    # Without this check a rejected login runs on into an
-                    # unauthorised read, which then looks like the user simply
-                    # not being on the lock.
-                    if login_resp.get("status", 0) != _SBT_STATUS_OK:
-                        raise IseoAuthError(
-                            f"TLV_LOGIN failed with status={login_resp.get('status')} — "
-                            "this identity may not have admin rights on the lock"
-                        )
+                    await self._bt_login(client, "this identity may not have admin rights on the lock")
 
             # Read all users within the same connection to get raw inner TLV bytes.
-            users_raw: list[tuple[int, bytes]] = []
-            fetch_start = 0
-            fetch_max = 0xFFFF
-            first_block = True
-
-            while True:
-                req = struct.pack(">HH", fetch_start, fetch_max)
-                await self._send_sbt(client, _OP_TLV_READ_USER_BLOCK, req)
-                try:
-                    sbt = await self._recv_sbt(timeout=_TIMEOUT_SLOW_OP if first_block else _TIMEOUT_OP)
-                    first_block = False
-                except asyncio.TimeoutError as exc:
-                    raise IseoConnectionError("Timed out reading user block from lock") from exc
-                if sbt.get("status", 0) != _SBT_STATUS_OK:
-                    break
-                raw = sbt.get("payload", b"")
-                if len(raw) < 3:
-                    break
-                page_count = raw[0]
-                remaining = struct.unpack_from(">H", raw, 1)[0]
-                for outer_tag, inner_bytes in _parse_tlv_list(raw[3:]):
-                    if outer_tag in _USER_TYPE_RANGE:
-                        users_raw.append((outer_tag, inner_bytes))
-                fetch_start += page_count
-                fetch_max = remaining
-                if remaining == 0 or page_count == 0:
-                    break
+            users_raw = await self._read_user_blocks(client)
 
             match = next(
                 (raw for ut, raw in users_raw if ut == user_type and _parse_tlv(raw).get(1, b"").hex() == uuid_hex),
@@ -2078,13 +2027,7 @@ class IseoClient:
             # Rebuild inner TLV in SDK-defined tag order (SbtUserDataTlvCodec.java).
             tags = dict(_parse_tlv_list(match))
             if disabled:
-                # Compute local midnight as a Unix timestamp using the system timezone (e.g. CET).
-                # datetime.now().astimezone() correctly reflects the current DST offset, avoiding
-                # the tm_isdst=-1 ambiguity that time.mktime() has during DST transitions.
-                today_local_midnight = int(
-                    datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-                )
-                tags[16] = bytes([0x01]) + struct.pack(">II", today_local_midnight, today_local_midnight) + bytes(10)
+                tags[16] = _expired_time_profile()
             elif validity is not None:
                 # Put back the profile the credential had before it was disabled.
                 tags[16] = validity
@@ -2128,17 +2071,7 @@ class IseoClient:
 
             await self._exchange_info(client)
 
-            # TLV_LOGIN
-            login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
-            await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-            try:
-                login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-            except asyncio.TimeoutError as exc:
-                raise IseoConnectionError("No response to TLV_LOGIN") from exc
-            if login_resp.get("status", 0) != _SBT_STATUS_OK:
-                raise IseoAuthError(
-                    f"TLV_LOGIN failed with status={login_resp.get('status')} — UUID may not be registered on the lock"
-                )
+            await self._bt_login(client, "UUID may not be registered on the lock")
 
             # OPCODE_TLV_LOG_NOTIFICATION_GET_UNREAD (66).
             # Each request returns the oldest unread page and advances the
@@ -2261,9 +2194,7 @@ class IseoClient:
                 _LOGGER.debug("No master password provided, assuming lock is already in Master Mode")
                 # Even in master mode, some locks might require a standard login first?
                 # The SDK shows performBtUserLogin before some master tasks.
-                login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
-                await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                await self._recv_sbt(timeout=_TIMEOUT_OP)
+                await self._bt_login(client, "UUID may not be registered on the lock")
 
             await self._register_log_notif_internal(client)
 
@@ -2326,17 +2257,7 @@ class IseoClient:
                     _LOGGER.debug("Gateway user deletion: skipping standard login, awaiting Master Card scan")
                 else:
                     # Standard admin login is sufficient for non-gateway users.
-                    login_payload = _tlv_user_bt(self._uuid_bytes, subtype=self._subtype)
-                    await self._send_sbt(client, _OP_TLV_LOGIN, login_payload)
-                    try:
-                        login_resp = await self._recv_sbt(timeout=_TIMEOUT_OP)
-                    except asyncio.TimeoutError as exc:
-                        raise IseoConnectionError("No response to TLV_LOGIN") from exc
-                    if login_resp.get("status", 0) != _SBT_STATUS_OK:
-                        raise IseoAuthError(
-                            f"TLV_LOGIN failed with status={login_resp.get('status')} — "
-                            "UUID may not be registered on the lock"
-                        )
+                    await self._bt_login(client, "UUID may not be registered on the lock")
             else:
                 _LOGGER.debug("Skipping TLV_LOGIN (assume Master Mode/Pre-authorized)")
 

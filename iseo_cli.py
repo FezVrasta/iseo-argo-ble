@@ -50,10 +50,17 @@ from typing import TYPE_CHECKING
 
 try:
     from iseo_argo_ble import (
+        USER_TYPE_ACCOUNT,
+        USER_TYPE_BT,
+        USER_TYPE_FINGERPRINT,
+        USER_TYPE_INVITATION,
+        USER_TYPE_PIN,
+        USER_TYPE_RFID,
         IseoAuthError,
         IseoClient,
         IseoConnectionError,
         MasterAuthError,
+        UserEntry,
         UserSubType,
         is_iseo_advertisement,
         parse_iseo_advertisement,
@@ -70,10 +77,17 @@ except ImportError:
     # Fallback to local project root if not installed as a package.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from iseo_argo_ble import (
+        USER_TYPE_ACCOUNT,
+        USER_TYPE_BT,
+        USER_TYPE_FINGERPRINT,
+        USER_TYPE_INVITATION,
+        USER_TYPE_PIN,
+        USER_TYPE_RFID,
         IseoAuthError,
         IseoClient,
         IseoConnectionError,
         MasterAuthError,
+        UserEntry,
         UserSubType,
         is_iseo_advertisement,
         parse_iseo_advertisement,
@@ -157,6 +171,25 @@ def _get_effective_address(
     if args.address and args.address != stored_address:
         _save_identity(args.identity, uuid_bytes, priv, address)
     return address
+
+
+def _client_from_args(args: argparse.Namespace, subtype: int | None = None) -> tuple[IseoClient, str]:
+    """Build the client every command starts from, and the address it will use.
+
+    Loading the identity, resolving the address (updating the stored one when
+    the command names a different lock) and constructing the client is the same
+    preamble in every command; the only thing that varies is whether the
+    operation acts as the gateway identity or as whatever --subtype says.
+    """
+    uuid_bytes, priv, stored_address = _load_identity(args.identity)
+    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
+    client = IseoClient(
+        address=address,
+        uuid_bytes=uuid_bytes,
+        identity_priv=priv,
+        subtype=args.subtype if subtype is None else subtype,
+    )
+    return client, address
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -258,15 +291,7 @@ async def cmd_monitor(args: argparse.Namespace) -> None:
 
 async def cmd_open(args: argparse.Namespace) -> None:
     """Open the lock."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=args.subtype,
-    )
+    client, address = _client_from_args(args)
     open_type = _open_type(args)
     print(f"Connecting to {address} (open_type={open_type}) …")
     try:
@@ -280,15 +305,7 @@ async def cmd_open(args: argparse.Namespace) -> None:
 
 async def cmd_gw_open(args: argparse.Namespace) -> None:
     """Open the lock using Gateway remote opening mode."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=UserSubType.BT_GATEWAY,
-    )
+    client, address = _client_from_args(args, subtype=UserSubType.BT_GATEWAY)
     open_type = _open_type(args)
     print(f"Connecting to {address} as Gateway (open_type={open_type}) …")
     try:
@@ -306,15 +323,7 @@ async def cmd_gw_open(args: argparse.Namespace) -> None:
 
 async def cmd_gw_logs(args: argparse.Namespace) -> None:
     """Fetch unread access log entries for this Gateway."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=UserSubType.BT_GATEWAY,
-    )
+    client, address = _client_from_args(args, subtype=UserSubType.BT_GATEWAY)
     print(f"Connecting to {address} to fetch unread Gateway logs …")
     try:
         entries = await client.gw_read_unread_logs(connect_timeout=args.timeout)
@@ -335,15 +344,7 @@ async def cmd_gw_logs(args: argparse.Namespace) -> None:
 
 async def cmd_gw_register_log_notif(args: argparse.Namespace) -> None:
     """Register Gateway for log notifications (opcode 64)."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=UserSubType.BT_GATEWAY,
-    )
+    client, address = _client_from_args(args, subtype=UserSubType.BT_GATEWAY)
     print(f"Connecting to {address} to register for log notifications …")
     try:
         await client.gw_register_log_notif(
@@ -360,15 +361,7 @@ async def cmd_gw_register_log_notif(args: argparse.Namespace) -> None:
 
 async def cmd_register_gateway(args: argparse.Namespace) -> None:
     """Register the current identity as an Argo Gateway on the lock."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=UserSubType.BT_GATEWAY,
-    )
+    client, address = _client_from_args(args, subtype=UserSubType.BT_GATEWAY)
 
     # Optionally generate and register an admin BT_SMARTPHONE identity in the same session.
     admin_priv: ec.EllipticCurvePrivateKey | None = None
@@ -394,8 +387,9 @@ async def cmd_register_gateway(args: argparse.Namespace) -> None:
     except Exception as exc:
         sys.exit(f"Setup failed: {exc}")
 
+    identity_uuid, _, _ = _load_identity(args.identity)
     print(
-        f"Success! Identity {uuid_bytes.hex().upper()} registered as Gateway '{args.name}' with log notifications enabled."
+        f"Success! Identity {identity_uuid.hex().upper()} registered as Gateway '{args.name}' with log notifications enabled."
     )
     if admin_uuid and admin_priv:
         out_path = args.admin_output or args.identity.with_suffix(".admin.json")
@@ -428,15 +422,8 @@ async def cmd_register_admin(args: argparse.Namespace) -> None:
             )
             await new_client.register_user(name=args.name, connect_timeout=args.timeout)
         else:
-            uuid_bytes, priv, stored_address = _load_identity(args.identity)
-            address = _get_effective_address(args, uuid_bytes, priv, stored_address)
+            caller_client, address = _client_from_args(args)
             print(f"Connecting to {address} to register new admin identity …")
-            caller_client = IseoClient(
-                address=address,
-                uuid_bytes=uuid_bytes,
-                identity_priv=priv,
-                subtype=args.subtype,
-            )
             await caller_client.register_user_as(
                 new_uuid_bytes=new_uuid,
                 new_identity_priv=new_priv,
@@ -460,20 +447,17 @@ async def cmd_register_admin(args: argparse.Namespace) -> None:
 
 async def cmd_register_pin(args: argparse.Namespace) -> None:
     """Register or update a PIN user on the lock."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=args.subtype,
-    )
+    client, address = _client_from_args(args)
 
     # The UUID of a PIN user is its BCD-encoded PIN (7 bytes, 0xF-padded).
     # An explicit --uuid overrides this (advanced use).
     if args.uuid:
-        pin_uuid = args.uuid[:14] if len(args.uuid) > 14 else args.uuid
+        # A PIN user's UUID is 7 bytes, so anything longer is truncated rather
+        # than rejected — but a short or non-hex one would only surface as a
+        # bare ValueError out of bytes.fromhex.
+        pin_uuid = args.uuid[:14]
+        if len(pin_uuid) != 14 or not all(c in "0123456789abcdefABCDEF" for c in pin_uuid):
+            sys.exit(f"--uuid must be 14 hex characters (7 bytes), got {args.uuid!r}")
         pin_uuid_bytes = bytes.fromhex(pin_uuid)
     else:
         pin_uuid_bytes = bcd_encode_pin(args.pin)
@@ -498,15 +482,7 @@ async def cmd_register_pin(args: argparse.Namespace) -> None:
 
 async def cmd_set_admin(args: argparse.Namespace) -> None:
     """Grant or revoke admin rights for a user."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=args.subtype,
-    )
+    client, address = _client_from_args(args)
 
     admin = args.command == "make-admin"
     action = "Granting" if admin else "Revoking"
@@ -530,15 +506,7 @@ async def cmd_set_admin(args: argparse.Namespace) -> None:
 
 async def cmd_disable_user(args: argparse.Namespace) -> None:
     """Disable a user on the lock (blocks access without deleting)."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=args.subtype,
-    )
+    client, address = _client_from_args(args)
 
     print(f"Connecting to {address} to disable user {args.uuid} …")
     try:
@@ -560,15 +528,14 @@ async def cmd_disable_user(args: argparse.Namespace) -> None:
 
 async def cmd_enable_user(args: argparse.Namespace) -> None:
     """Re-enable a previously disabled user."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
+    client, address = _client_from_args(args)
 
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=args.subtype,
-    )
+    # Disabling overwrote the user's time profile, so the lock no longer knows
+    # what it was: without one supplied here, enabling clears every restriction
+    # the credential had.
+    validity = bytes.fromhex(args.validity) if args.validity else None
+    if validity is None:
+        print("No --validity given: the user will come back with no time restriction.")
 
     print(f"Connecting to {address} to enable user {args.uuid} …")
     try:
@@ -579,6 +546,7 @@ async def cmd_enable_user(args: argparse.Namespace) -> None:
             connect_timeout=args.timeout,
             master_password=args.password,
             skip_login=args.master,
+            validity=validity,
         )
     except ValueError as exc:
         sys.exit(f"User not found on the lock: {exc}")
@@ -592,15 +560,7 @@ async def cmd_enable_user(args: argparse.Namespace) -> None:
 
 async def cmd_erase_identity(args: argparse.Namespace) -> None:
     """Remove the current identity from the lock's whitelist."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=args.subtype,
-    )
+    client, address = _client_from_args(args)
     print(f"Connecting to {address} to erase identity …")
     try:
         await client.erase_user(
@@ -613,20 +573,13 @@ async def cmd_erase_identity(args: argparse.Namespace) -> None:
     except Exception as exc:
         sys.exit(f"Erase failed: {exc}")
 
-    print(f"Success! Identity {uuid_bytes.hex().upper()} removed from lock.")
+    identity_uuid, _, _ = _load_identity(args.identity)
+    print(f"Success! Identity {identity_uuid.hex().upper()} removed from lock.")
 
 
 async def cmd_delete_user(args: argparse.Namespace) -> None:
     """Remove a specific user from the lock's whitelist (interactive)."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=args.subtype,
-    )
+    client, address = _client_from_args(args)
 
     target_uuid_hex = args.uuid
     target_type = args.user_type
@@ -641,15 +594,7 @@ async def cmd_delete_user(args: argparse.Namespace) -> None:
 
         print("\nRegistered Users:")
         for i, u in enumerate(users, 1):
-            if u.user_type == 17:
-                st_label = "Gateway" if u.inner_subtype == 17 else "Phone"
-            elif u.user_type == 18:
-                st_label = "PIN"
-            elif u.user_type == 16:
-                st_label = "RFID"
-            else:
-                st_label = f"Type {u.user_type}"
-            print(f" {i:2}. {u.name or '<no name>':<16} {st_label:<10} UUID={u.uuid_hex.upper()}")
+            print(f" {i:2}. {u.name or '<no name>':<16} {_user_type_label(u):<10} UUID={u.uuid_hex.upper()}")
 
         try:
             choice = input(f"\nSelect a user to delete (1-{len(users)}, or Enter to cancel): ").strip()
@@ -701,15 +646,7 @@ async def cmd_delete_user(args: argparse.Namespace) -> None:
 
 async def cmd_status(args: argparse.Namespace) -> None:
     """Read the door open/closed state from the lock."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=args.subtype,
-    )
+    client, address = _client_from_args(args)
     print(f"Connecting to {address} …")
     try:
         state = await client.read_state(connect_timeout=args.timeout)
@@ -728,15 +665,7 @@ async def cmd_status(args: argparse.Namespace) -> None:
 
 async def cmd_logs(args: argparse.Namespace) -> None:
     """Fetch and print access log entries from the lock."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=args.subtype,
-    )
+    client, address = _client_from_args(args)
     print(f"Connecting to {address} …")
     try:
         entries = await client.read_logs(
@@ -766,26 +695,30 @@ async def cmd_logs(args: argparse.Namespace) -> None:
 
 
 _USER_TYPE_LABELS: dict[int, str] = {
-    16: "RFID",
-    17: "Bluetooth",
-    18: "PIN",
-    19: "Invitation",
-    20: "Fingerprint",
-    21: "Account",
+    USER_TYPE_RFID: "RFID",
+    USER_TYPE_BT: "Bluetooth",
+    USER_TYPE_PIN: "PIN",
+    USER_TYPE_INVITATION: "Invitation",
+    USER_TYPE_FINGERPRINT: "Fingerprint",
+    USER_TYPE_ACCOUNT: "Account",
 }
+
+
+def _user_type_label(user: UserEntry) -> str:
+    """Describe a credential's type for a listing.
+
+    Bluetooth users are split by subtype: a gateway is a controller enrolled by
+    an integration, not a phone somebody carries, and the two are worth telling
+    apart wherever a human is choosing between them.
+    """
+    if user.user_type == USER_TYPE_BT:
+        return "Gateway" if user.inner_subtype == UserSubType.BT_GATEWAY else "Phone"
+    return _USER_TYPE_LABELS.get(user.user_type, f"Type {user.user_type}")
 
 
 async def cmd_users(args: argparse.Namespace) -> None:
     """Fetch and print all enrolled users from the lock whitelist."""
-    uuid_bytes, priv, stored_address = _load_identity(args.identity)
-    address = _get_effective_address(args, uuid_bytes, priv, stored_address)
-
-    client = IseoClient(
-        address=address,
-        uuid_bytes=uuid_bytes,
-        identity_priv=priv,
-        subtype=args.subtype,
-    )
+    client, address = _client_from_args(args)
     print(f"Connecting to {address} …")
     try:
         users = await client.read_users(
@@ -812,14 +745,14 @@ async def cmd_users(args: argparse.Namespace) -> None:
     print(f"\n{'#':>4}  {'Type':<12}  {'UUID':<36}  {'Status':<10}  Name")
     print("-" * 90)
     for i, u in enumerate(users, start=1):
-        if u.user_type == 17:
-            type_label = "Gateway" if u.inner_subtype == 17 else "Phone"
-        else:
-            type_label = _USER_TYPE_LABELS.get(u.user_type, f"Type{u.user_type}")
-
+        type_label = _user_type_label(u)
         name = u.name or "(no name)"
         status = "disabled" if u.disabled else "active"
         print(f"{i:>4}  {type_label:<12}  {u.uuid_hex:<36}  {status:<10}  {name}")
+        if args.raw and u.validity:
+            # Disabling overwrites this, so it is worth copying down beforehand:
+            # `enable-user --validity` takes it back.
+            print(f"{'':>4}  time profile: {u.validity.hex()}")
 
     print(f"\n{len(users)} user{'s' if len(users) != 1 else ''} shown.")
 
@@ -959,6 +892,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Filter by user type: bluetooth rfid pin invitation fingerprint account",
     )
     p_users.add_argument("--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)")
+    p_users.add_argument(
+        "--raw",
+        action="store_true",
+        help="Also print each user's time profile (tag 16), the value `enable-user --validity` restores",
+    )
 
     sub.add_parser("identity", help="Show the current identity UUID")
     sub.add_parser("new-identity", help="Generate a new UUID + keypair")
@@ -1002,7 +940,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_reg_pin.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")
     p_reg_pin.add_argument("pin", metavar="PIN", help="4-14 digit PIN code")
     p_reg_pin.add_argument("--name", help="Name for the PIN user")
-    p_reg_pin.add_argument("--uuid", help="32-char hex UUID (generated if omitted)")
+    p_reg_pin.add_argument(
+        "--uuid",
+        help="14-char hex UUID for the PIN user (default: the BCD-encoded PIN itself)",
+    )
     p_reg_pin.add_argument("--password", help="Lock master password")
     p_reg_pin.add_argument("--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)")
 
@@ -1018,6 +959,14 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--user-type", type=int, default=18, help="User type (16=RFID, 17=Bluetooth, 18=PIN)")
         p.add_argument("--password", help="Lock master password")
         p.add_argument("--master", action="store_true", help="Skip login (assume lock is in Master Mode via card)")
+        if cmd == "enable-user":
+            p.add_argument(
+                "--validity",
+                help=(
+                    "Hex time profile (tag 16) to restore, as shown by `users --raw` before the user was "
+                    "disabled. Without it the user comes back with no time restriction at all."
+                ),
+            )
 
     p_erase = sub.add_parser("erase-identity", help="Remove current identity from lock")
     p_erase.add_argument("address", metavar="ADDRESS", nargs="?", help="Lock BLE address")

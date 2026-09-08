@@ -139,6 +139,9 @@
     },
     "lock_rejected_identity": {
       "message": "La serratura ha rifiutato l'identità. Assicurati che l'UID sia registrato nell'app Argo."
+    },
+    "no_admin_identity": {
+      "message": "La gestione degli utenti richiede un'identità amministratore. Ripeti la configurazione dell'integrazione e registrane una con la Master Card."
     }
   }
 }

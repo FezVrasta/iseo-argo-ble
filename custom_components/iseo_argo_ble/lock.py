@@ -42,6 +42,7 @@ from .const import (
     EVENT_ALERT,
     EVENT_LOCK_OPENED,
     signal_update,
+    user_key,
 )
 from .entity import passage_mode_active
 
@@ -165,6 +166,7 @@ class IseoLockEntity(LockEntity):
         # to hold the "unlocked" state during the momentary-actuator relock.
         self._suppress_state_until: datetime | None = None
         self._last_advertisement: datetime | None = None
+        self._last_callback_refresh: datetime | None = None
         self._attr_extra_state_attributes: dict[str, Any] = {}
 
     async def async_added_to_hass(self) -> None:
@@ -315,14 +317,21 @@ class IseoLockEntity(LockEntity):
 
         Runs on a timer and never connects to the lock.
         """
+        now = datetime.now(tz=UTC)
         last = self._last_advertisement
-        silence = None if last is None else datetime.now(tz=UTC) - last
+        silence = None if last is None else now - last
 
         # The callback can be dropped by the bluetooth stack; re-arm it if the
-        # lock has gone quiet for a while.
+        # lock has gone quiet for a while. Only advertisements reset the
+        # silence, so rate-limit this on its own clock — otherwise a lock that
+        # is simply out of range tears the callback down and builds it again on
+        # every single tick, for as long as it stays away.
         if silence is not None and silence >= _CALLBACK_REFRESH_AFTER:
-            _LOGGER.debug("No advertisement for %s — re-registering passive callback", silence)
-            self._register_passive_callback()
+            since_refresh = None if self._last_callback_refresh is None else now - self._last_callback_refresh
+            if since_refresh is None or since_refresh >= _CALLBACK_REFRESH_AFTER:
+                _LOGGER.debug("No advertisement for %s — re-registering passive callback", silence)
+                self._last_callback_refresh = now
+                self._register_passive_callback()
 
         unavailable = silence is None or silence >= _UNAVAILABLE_AFTER
         if unavailable and self._attr_available:
@@ -469,7 +478,7 @@ class IseoLockEntity(LockEntity):
             payload["lock_user_name"] = opened_by
             # Map the lock user to a linked Home Assistant account if configured.
             mapping = self._entry.options.get(CONF_USER_MAPPING, {})
-            if ha_user_id := mapping.get(f"{user.user_type}_{user.uuid_hex}"):
+            if ha_user_id := mapping.get(user_key(user.user_type, user.uuid_hex)):
                 ha_user = await self.hass.auth.async_get_user(ha_user_id)
                 ha_user_name = ha_user.name if ha_user else None
                 payload["ha_user_id"] = ha_user_id
@@ -484,7 +493,7 @@ class IseoLockEntity(LockEntity):
         if user is not None:
             # Record this open against the specific lock user so the per-user
             # switch entity can surface "last opened" for that credential.
-            key = f"{user.user_type}_{user.uuid_hex}"
+            key = user_key(user.user_type, user.uuid_hex)
             self._entry.runtime_data.last_open_by_user[key] = payload
         self._publish_update()
 
@@ -500,7 +509,7 @@ class IseoLockEntity(LockEntity):
             user = self._match_log_user(log)
             if user is None:
                 continue
-            records[f"{user.user_type}_{user.uuid_hex}"] = {
+            records[user_key(user.user_type, user.uuid_hex)] = {
                 "timestamp": log.timestamp.isoformat(),
                 "event": describe_event(log.event_code),
                 "opened_by": user.name.strip() or f"User {user.uuid_hex[:8]}",
