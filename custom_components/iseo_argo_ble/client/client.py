@@ -2085,19 +2085,22 @@ class IseoClient:
             pages = 0
             while pages < _MAX_LOG_DRAIN_PAGES:
                 pages += 1
-                await self._send_sbt(client, _OP_TLV_LOG_NOTIF_GET_UNREAD, payload)
-
                 try:
+                    await self._send_sbt(client, _OP_TLV_LOG_NOTIF_GET_UNREAD, payload)
                     sbt = await self._recv_sbt(timeout=_TIMEOUT_OP)
-                except asyncio.TimeoutError as exc:
+                except (asyncio.TimeoutError, BleakError, OSError) as exc:
                     # Every page already fetched has moved the lock's read
                     # pointer past it, so raising here would destroy those
                     # entries: the lock will never offer them again. Hand back
-                    # what we have and let the caller report it.
+                    # what we have and let the caller report it. This covers
+                    # the request as well as the response: a write that fails
+                    # or a link that drops after an earlier page must not throw
+                    # the consumed pages away either.
                     if entries:
                         _LOGGER.warning(
-                            "gw_read_unread_logs: no response to page %d, returning the %d entr%s already read",
+                            "gw_read_unread_logs: page %d failed (%s), returning the %d entr%s already read",
                             pages,
+                            exc,
                             len(entries),
                             "y" if len(entries) == 1 else "ies",
                         )

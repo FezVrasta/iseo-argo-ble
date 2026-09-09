@@ -8,6 +8,7 @@ import struct
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bleak.exc import BleakError
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import ec
 
@@ -519,7 +520,6 @@ async def test_await_election_frame_tolerates_silence(identity, monkeypatch):
 @pytest.mark.asyncio
 async def test_connect_errors_surface_as_iseo_errors(identity):
     """Regression: bleak's own errors escaped and callers could not catch them."""
-    from bleak.exc import BleakError
 
     uuid_bytes, priv = identity
     client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv, ble_device=MagicMock())
@@ -565,6 +565,38 @@ async def test_gw_read_unread_logs_keeps_pages_read_before_a_failure(identity):
             {"status": _SBT_STATUS_OK},  # TLV_LOGIN
             {"status": _SBT_STATUS_OK, "payload": _log_page(2, 1, 0x10)},
             asyncio.TimeoutError(),  # the lock stops answering mid-drain
+        ]
+    )
+
+    mock_bleak = MagicMock()
+    mock_bleak.start_notify = AsyncMock()
+    with patch.object(IseoClient, "_connected_client") as mock_conn:
+        mock_conn.return_value.__aenter__.return_value = mock_bleak
+        entries = await client.gw_read_unread_logs()
+
+    assert len(entries) == 2
+
+
+@pytest.mark.asyncio
+async def test_gw_read_unread_logs_keeps_pages_when_the_link_drops(identity):
+    """A write failing after an earlier page must not discard it either.
+
+    The response path already handed back what it had; a BLE write or a
+    dropped link on a later request has the same consequence — the pointer
+    moved and those entries are gone from the lock — so it must behave the
+    same way.
+    """
+    uuid_bytes, priv = identity
+    client = IseoClient("AA:BB:CC:DD:EE:FF", uuid_bytes, priv, subtype=UserSubType.BT_GATEWAY)
+    client._handshake = AsyncMock()
+    client._await_election_frame = AsyncMock()
+    client._exchange_info = AsyncMock()
+    # TLV_LOGIN, then the first page's request, then the link drops.
+    client._send_sbt = AsyncMock(side_effect=[None, None, BleakError("disconnected")])
+    client._recv_sbt = AsyncMock(
+        side_effect=[
+            {"status": _SBT_STATUS_OK},  # TLV_LOGIN
+            {"status": _SBT_STATUS_OK, "payload": _log_page(2, 1, 0x10)},
         ]
     )
 
