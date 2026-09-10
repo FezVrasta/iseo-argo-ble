@@ -610,6 +610,37 @@ async def test_gw_read_unread_logs_keeps_pages_when_the_link_drops(identity):
 
 
 @pytest.mark.asyncio
+async def test_connected_client_survives_a_failing_disconnect(identity):
+    """A failure tearing the link down must not replace the session's result.
+
+    Whatever the session produced has already happened on the lock — a
+    destructive log read has moved its read pointer — so letting a disconnect
+    error out of the finally would throw that away.
+    """
+    uuid_bytes, priv = identity
+    client = IseoClient(
+        "AA:BB:CC:DD:EE:FF",
+        uuid_bytes,
+        priv,
+        subtype=UserSubType.BT_GATEWAY,
+        ble_device=MagicMock(),
+    )
+    client._resolve_io_characteristics = MagicMock()
+
+    bleak_client = MagicMock()
+    bleak_client.disconnect = AsyncMock(side_effect=BleakError("link gone"))
+
+    with patch(
+        "iseo_argo_ble.client._bleak_establish_connection",
+        AsyncMock(return_value=bleak_client),
+    ):
+        async with client._connected_client(timeout=1) as yielded:
+            assert yielded is bleak_client
+
+    bleak_client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_gw_read_unread_logs_raises_when_the_first_page_fails(identity):
     """Nothing was drained, so the caller should hear about the failure."""
     uuid_bytes, priv = identity

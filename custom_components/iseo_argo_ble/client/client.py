@@ -1059,7 +1059,15 @@ class IseoClient:
                 yield client
             finally:
                 _LOGGER.debug("Session with %s lasted %.2fs", self._address, time.monotonic() - connected)
-                await client.disconnect()
+                try:
+                    await client.disconnect()
+                except (BleakError, OSError) as exc:
+                    # Tearing the link down is not something the caller can
+                    # act on, and letting it out of the finally would replace
+                    # whatever the session produced. For a destructive read
+                    # that means losing entries the lock has already marked
+                    # read and will never offer again.
+                    _LOGGER.debug("Ignoring disconnect failure for %s: %s", self._address, exc)
         else:
             if self._ble_device is None and _bleak_establish_connection is not None:
                 # bleak_retry_connector is available (HA production context) but no BLEDevice
